@@ -136,7 +136,16 @@ let uploadRunning = false;
 let uploadAgain = false;
 
 async function uploadEncryptedSession() {
-  if (!sessionSecurityReady()) return;
+  if (!sessionSecurityReady()) {
+    console.warn('⚠️ Sesión NO guardada: faltan GITHUB_TOKEN o SESSION_PASSWORD.');
+    return;
+  }
+
+  const credsPath = path.join(SESSION_DIR, 'creds.json');
+  if (!fs.existsSync(credsPath)) {
+    console.warn('⚠️ Sesión NO guardada: todavía no existe creds.json.');
+    return;
+  }
   if (uploadRunning) {
     uploadAgain = true;
     return;
@@ -169,8 +178,11 @@ async function uploadEncryptedSession() {
       body: JSON.stringify(body)
     });
 
-    if (!response.ok) throw new Error('GitHub HTTP ' + response.status);
-    console.log('Sesión cifrada guardada en GitHub.');
+    if (!response.ok) {
+      const details = await response.text().catch(() => '');
+      throw new Error('GitHub HTTP ' + response.status + (details ? ' - ' + details.slice(0, 300) : ''));
+    }
+    console.log('✅ Sesión cifrada guardada en GitHub.');
   } catch (error) {
     console.error('No se pudo guardar la sesión en GitHub:', error.message);
   } finally {
@@ -510,7 +522,9 @@ async function startSocket(restoreSession = true) {
       pairingRequested = false;
       pairingError = null;
       console.log('el mejor bot conectado');
-      scheduleSessionUpload();
+      // Guardar INMEDIATAMENTE al terminar la vinculación.
+      clearTimeout(uploadTimer);
+      uploadEncryptedSession().catch(error => console.error('Guardado inmediato:', error));
     }
 
     if (connection === 'close') {
