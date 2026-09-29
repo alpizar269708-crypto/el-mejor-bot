@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const P = require('pino');
 const QRCode = require('qrcode');
 
@@ -287,6 +288,54 @@ async function requestPairingCodeIfNeeded() {
   }
 }
 
+async function optimizeHeavyVideo(buffer, videoMessage = {}) {
+  const duration = Number(videoMessage.seconds || 0);
+  const isHeavy = buffer.length >= 12 * 1024 * 1024;
+  const isLong = duration > 10;
+
+  // Los videos normales siguen por la ruta rápida original.
+  if (!isHeavy && !isLong) return { buffer, optimized: false };
+
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-'));
+  const input = path.join(tempDir, 'input');
+  const output = path.join(tempDir, 'optimized.mp4');
+
+  try {
+    await fs.promises.writeFile(input, buffer);
+
+    await new Promise((resolve, reject) => {
+      ffmpeg(input)
+        .videoFilters([
+          'fps=12',
+          'scale=512:512:force_original_aspect_ratio=decrease:flags=fast_bilinear'
+        ])
+        .outputOptions([
+          '-t 10',
+          '-an',
+          '-c:v libx264',
+          '-preset ultrafast',
+          '-crf 23',
+          '-movflags +faststart'
+        ])
+        .on('end', resolve)
+        .on('error', reject)
+        .save(output);
+    });
+
+    const optimized = await fs.promises.readFile(output);
+    console.log(
+      '🎥 Video pesado/largo optimizado:',
+      Math.round(buffer.length / 1024 / 1024) + ' MB →',
+      Math.round(optimized.length / 1024 / 1024) + ' MB',
+      duration ? '(' + duration + 's)' : ''
+    );
+
+    return { buffer: optimized, optimized: true };
+  } finally {
+    await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 async function createSticker(message, sourceMessage, mediaType) {
   const id = message.key.id;
   if (processing.has(id)) return;
@@ -299,7 +348,7 @@ async function createSticker(message, sourceMessage, mediaType) {
       react: { text: '⏳', key: message.key }
     });
 
-    const buffer = await downloadMediaMessage(
+    let buffer = await downloadMediaMessage(
       sourceMessage,
       'buffer',
       {},
@@ -308,6 +357,12 @@ async function createSticker(message, sourceMessage, mediaType) {
         reuploadRequest: sock.updateMediaMessage
       }
     );
+
+    if (mediaType === 'video') {
+      const videoMessage = unwrapMessage(sourceMessage)?.videoMessage || {};
+      const optimized = await optimizeHeavyVideo(buffer, videoMessage);
+      buffer = optimized.buffer;
+    }
 
     const sticker = new Sticker(buffer, {
       pack: 'el mejor bot',
