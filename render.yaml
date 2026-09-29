@@ -8,3 +8,11 @@ services:
     envVars:
       - key: PORT
         value: 3000
+
+  - type: cron
+    name: el-mejor-bot-keepalive
+    runtime: node
+    plan: starter
+    schedule: "*/10 * * * *"
+    buildCommand: npm install
+    startCommand: curl -fsS https://el-mejor-bot.onrender.com/keepalive
