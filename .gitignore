@@ -2,5 +2,7 @@ node_modules/
 .env
 session/*
 !session/.gitkeep
+# La sesión cifrada SÍ se guarda en GitHub
+
 *.log
 .DS_Store
