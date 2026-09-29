@@ -549,6 +549,10 @@ ${code}
 </html>`);
 });
 
+app.get('/keepalive', (_req, res) => {
+  res.status(200).send('ok');
+});
+
 app.get('/estado-vinculacion', (_req, res) => {
   res.json({
     conectado: connectionState === 'conectado',
