@@ -21,6 +21,10 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
 
+const ffmpeg = require('fluent-ffmpeg');
+const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
+ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_REPO = process.env.GITHUB_REPO || 'alpizar269708-crypto/el-mejor-bot';
 const SESSION_PASSWORD = process.env.SESSION_PASSWORD;
@@ -240,7 +244,8 @@ function findMedia(message) {
 }
 
 function getQuotedMessage(message) {
-  const ctx = message?.message?.extendedTextMessage?.contextInfo;
+  const m = unwrapMessage(message);
+  const ctx = m?.extendedTextMessage?.contextInfo;
   return ctx?.quotedMessage ? {
     key: {
       remoteJid: message.key.remoteJid,
@@ -412,7 +417,15 @@ async function startSocket(restoreSession = true) {
     await authState.saveCreds();
     scheduleSessionUpload();
   });
-  sock.ev.on('messages.upsert', handleMessage);
+  sock.ev.on('messages.upsert', async update => {
+    for (const message of update?.messages || []) {
+      try {
+        await handleMessage({ messages: [message] });
+      } catch (error) {
+        console.error('Error procesando mensaje:', error);
+      }
+    }
+  });
 
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
