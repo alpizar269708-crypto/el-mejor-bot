@@ -16,6 +16,174 @@ const {
 
 const { Sticker, StickerTypes } = require('wa-sticker-formatter');
 
+const crypto = require('crypto');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileAsync = promisify(execFile);
+
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const GITHUB_REPO = process.env.GITHUB_REPO || 'alpizar269708-crypto/el-mejor-bot';
+const SESSION_PASSWORD = process.env.SESSION_PASSWORD;
+const ENCRYPTED_SESSION_FILE = 'session.enc';
+
+function sessionSecurityReady() {
+  return Boolean(GITHUB_TOKEN && SESSION_PASSWORD);
+}
+
+function deriveKey(password, salt) {
+  return crypto.scryptSync(password, salt, 32);
+}
+
+function encryptSession(json) {
+  const salt = crypto.randomBytes(16);
+  const iv = crypto.randomBytes(12);
+  const key = deriveKey(SESSION_PASSWORD, salt);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const ciphertext = Buffer.concat([cipher.update(json, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return JSON.stringify({
+    version: 1,
+    algorithm: 'aes-256-gcm',
+    kdf: 'scrypt',
+    salt: salt.toString('base64'),
+    iv: iv.toString('base64'),
+    tag: tag.toString('base64'),
+    data: ciphertext.toString('base64')
+  });
+}
+
+function decryptSession(payload) {
+  const p = JSON.parse(payload);
+  const salt = Buffer.from(p.salt, 'base64');
+  const iv = Buffer.from(p.iv, 'base64');
+  const tag = Buffer.from(p.tag, 'base64');
+  const data = Buffer.from(p.data, 'base64');
+  const key = deriveKey(SESSION_PASSWORD, salt);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
+}
+
+async function githubRequest(url, options = {}) {
+  return fetch(url, {
+    ...options,
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: 'Bearer ' + GITHUB_TOKEN,
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(options.headers || {})
+    }
+  });
+}
+
+async function downloadEncryptedSession() {
+  if (!sessionSecurityReady()) {
+    console.warn('Sesión GitHub: faltan GITHUB_TOKEN o SESSION_PASSWORD.');
+    return false;
+  }
+
+  try {
+    const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + ENCRYPTED_SESSION_FILE;
+    const response = await githubRequest(url);
+    if (response.status === 404) return false;
+    if (!response.ok) throw new Error('GitHub HTTP ' + response.status);
+
+    const file = await response.json();
+    const encrypted = Buffer.from(file.content.replace(/\n/g, ''), 'base64').toString('utf8');
+    const decrypted = decryptSession(encrypted);
+
+    fs.rmSync(SESSION_DIR, { recursive: true, force: true });
+    fs.mkdirSync(SESSION_DIR, { recursive: true });
+
+    const files = JSON.parse(decrypted);
+    for (const [relativePath, base64] of Object.entries(files)) {
+      const target = path.join(SESSION_DIR, relativePath);
+      if (!target.startsWith(SESSION_DIR + path.sep)) throw new Error('Ruta de sesión inválida');
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, Buffer.from(base64, 'base64'));
+    }
+
+    console.log('Sesión cifrada restaurada desde GitHub.');
+    return true;
+  } catch (error) {
+    console.error('No se pudo restaurar la sesión cifrada:', error.message);
+    return false;
+  }
+}
+
+async function collectSession() {
+  const files = {};
+  const walk = async (dir, prefix = '') => {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const rel = path.join(prefix, entry.name);
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) await walk(full, rel);
+      else files[rel.replaceAll(path.sep, '/')] = (await fs.promises.readFile(full)).toString('base64');
+    }
+  };
+  await walk(SESSION_DIR);
+  return files;
+}
+
+let uploadTimer = null;
+let uploadRunning = false;
+let uploadAgain = false;
+
+async function uploadEncryptedSession() {
+  if (!sessionSecurityReady()) return;
+  if (uploadRunning) {
+    uploadAgain = true;
+    return;
+  }
+
+  uploadRunning = true;
+  try {
+    const files = await collectSession();
+    const encrypted = encryptSession(JSON.stringify(files));
+    const content = Buffer.from(encrypted, 'utf8').toString('base64');
+    const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + ENCRYPTED_SESSION_FILE;
+
+    let sha = null;
+    const existing = await githubRequest(url);
+    if (existing.ok) {
+      sha = (await existing.json()).sha;
+    } else if (existing.status !== 404) {
+      throw new Error('GitHub HTTP ' + existing.status);
+    }
+
+    const body = {
+      message: 'Actualizar sesión cifrada de WhatsApp',
+      content
+    };
+    if (sha) body.sha = sha;
+
+    const response = await githubRequest(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    if (!response.ok) throw new Error('GitHub HTTP ' + response.status);
+    console.log('Sesión cifrada guardada en GitHub.');
+  } catch (error) {
+    console.error('No se pudo guardar la sesión en GitHub:', error.message);
+  } finally {
+    uploadRunning = false;
+    if (uploadAgain) {
+      uploadAgain = false;
+      scheduleSessionUpload();
+    }
+  }
+}
+
+function scheduleSessionUpload() {
+  if (!sessionSecurityReady()) return;
+  clearTimeout(uploadTimer);
+  uploadTimer = setTimeout(() => uploadEncryptedSession(), 15000);
+}
+
+
 const PORT = process.env.PORT || 3000;
 const SESSION_DIR = path.join(__dirname, 'session');
 
@@ -168,6 +336,7 @@ async function handleMessage(update) {
 async function startSocket() {
   if (sock && connectionState !== 'desconectado') return sock;
 
+  if (sessionSecurityReady()) await downloadEncryptedSession();
   authState = await useMultiFileAuthState(SESSION_DIR);
   connectionState = 'conectando';
 
@@ -181,7 +350,10 @@ async function startSocket() {
     markOnlineOnConnect: false
   });
 
-  sock.ev.on('creds.update', authState.saveCreds);
+  sock.ev.on('creds.update', async () => {
+    await authState.saveCreds();
+    scheduleSessionUpload();
+  });
   sock.ev.on('messages.upsert', handleMessage);
 
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
@@ -199,6 +371,7 @@ async function startSocket() {
       qrDataUrl = null;
       pairingCode = null;
       console.log('el mejor bot conectado');
+      scheduleSessionUpload();
     }
 
     if (connection === 'close') {
@@ -319,6 +492,7 @@ app.post('/cerrar-sesion', async (_req, res) => {
     } catch {}
 
     fs.mkdirSync(SESSION_DIR, { recursive: true });
+    if (sessionSecurityReady()) scheduleSessionUpload();
   }
 
   res.redirect('/');
