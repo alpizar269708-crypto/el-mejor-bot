@@ -197,6 +197,9 @@ let sock = null;
 let authState = null;
 let qrDataUrl = null;
 let pairingCode = null;
+let pairingNumber = null;
+let pairingRequested = false;
+let pairingError = null;
 let connectionState = 'desconectado';
 let reconnectTimer = null;
 const processing = new Set();
@@ -252,6 +255,29 @@ function isStickerCommand(text) {
 
 async function sendText(jid, text, quoted) {
   return sock.sendMessage(jid, { text }, quoted ? { quoted } : undefined);
+}
+
+function normalizePhoneNumber(value) {
+  return String(value || '').replace(/\\D/g, '');
+}
+
+async function requestPairingCodeIfNeeded() {
+  if (!sock || !pairingNumber || pairingRequested) return;
+  if (authState?.state?.creds?.registered) return;
+
+  pairingRequested = true;
+
+  try {
+    const code = await sock.requestPairingCode(pairingNumber);
+    pairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
+    pairingError = null;
+    qrDataUrl = null;
+    console.log('\\n🔢 CÓDIGO DE VINCULACIÓN:', pairingCode, '\\n');
+  } catch (error) {
+    pairingRequested = false;
+    pairingError = error?.message || 'No se pudo generar el código.';
+    console.error('❌ Error generando código de vinculación:', pairingError);
+  }
 }
 
 async function createSticker(message, sourceMessage, mediaType) {
@@ -333,10 +359,10 @@ async function handleMessage(update) {
   );
 }
 
-async function startSocket() {
+async function startSocket(restoreSession = true) {
   if (sock && connectionState !== 'desconectado') return sock;
 
-  if (sessionSecurityReady()) await downloadEncryptedSession();
+  if (restoreSession && sessionSecurityReady()) await downloadEncryptedSession();
   authState = await useMultiFileAuthState(SESSION_DIR);
   connectionState = 'conectando';
 
@@ -358,18 +384,30 @@ async function startSocket() {
 
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
-      try {
-        qrDataUrl = await QRCode.toDataURL(qr);
-        pairingCode = null;
-      } catch (error) {
-        console.error('Error generando QR:', error);
+      if (pairingNumber) {
+        qrDataUrl = null;
+        setTimeout(() => requestPairingCodeIfNeeded(), 800);
+      } else {
+        try {
+          qrDataUrl = await QRCode.toDataURL(qr);
+          pairingCode = null;
+        } catch (error) {
+          console.error('Error generando QR:', error);
+        }
       }
+    }
+
+    if (connection === 'connecting' && pairingNumber) {
+      setTimeout(() => requestPairingCodeIfNeeded(), 1200);
     }
 
     if (connection === 'open') {
       connectionState = 'conectado';
       qrDataUrl = null;
       pairingCode = null;
+      pairingNumber = null;
+      pairingRequested = false;
+      pairingError = null;
       console.log('el mejor bot conectado');
       scheduleSessionUpload();
     }
@@ -386,6 +424,8 @@ async function startSocket() {
       if (statusCode === DisconnectReason.loggedOut) {
         qrDataUrl = null;
         pairingCode = null;
+        pairingNumber = null;
+        pairingRequested = false;
         try {
           fs.rmSync(SESSION_DIR, { recursive: true, force: true });
         } catch {}
@@ -393,9 +433,13 @@ async function startSocket() {
         return;
       }
 
+      if (statusCode !== 515) {
+        pairingRequested = false;
+      }
+
       clearTimeout(reconnectTimer);
       reconnectTimer = setTimeout(() => {
-        startSocket().catch(error => console.error('Reconexión:', error));
+        startSocket(false).catch(error => console.error('Reconexión:', error));
       }, 3000);
     }
   });
@@ -409,8 +453,10 @@ app.get('/', (_req, res) => {
     : '<p>No hay QR disponible.</p>';
 
   const code = pairingCode
-    ? '<div style="font-size:30px;font-weight:bold;letter-spacing:5px;margin:20px">' + pairingCode + '</div>'
-    : '<p>No hay código disponible.</p>';
+    ? '<div style="font-size:30px;font-weight:bold;letter-spacing:5px;margin:20px">' + pairingCode + '</div><p>En WhatsApp: Dispositivos vinculados → Vincular dispositivo → Vincular con número de teléfono.</p>'
+    : pairingError
+      ? '<p style="color:#b91c1c">❌ ' + pairingError + '</p>'
+      : '<p>Escribe tu número y pulsa Generar código.</p>';
 
   res.send(`<!doctype html>
 <html lang="es">
@@ -455,23 +501,38 @@ app.get('/estado-vinculacion', (_req, res) => {
 });
 
 app.post('/iniciar', async (req, res) => {
-  const numero = String(req.body.numero || '').replace(/\D/g, '');
+  const numero = normalizePhoneNumber(req.body.numero);
 
   if (!numero) return res.status(400).send('Número inválido.');
 
+  if (numero.length < 8 || numero.length > 15) {
+    return res.status(400).send('Número inválido. Usa código de país y solo números.');
+  }
+
   try {
-    const socket = await startSocket();
+    pairingNumber = numero;
+    pairingCode = null;
+    pairingRequested = false;
+    pairingError = null;
+    qrDataUrl = null;
+
+    await startSocket(true);
 
     if (authState?.state?.creds?.registered) {
+      pairingNumber = null;
       return res.redirect('/');
     }
 
-    pairingCode = await socket.requestPairingCode(numero);
-    qrDataUrl = null;
+    // El código NO se solicita aquí inmediatamente.
+    // Baileys requiere que el socket ya esté en connecting/QR.
+    setTimeout(() => requestPairingCodeIfNeeded(), 1000);
+
     res.redirect('/');
   } catch (error) {
-    console.error('Error al generar código:', error);
-    res.status(500).send('No se pudo generar el código.');
+    pairingRequested = false;
+    pairingError = error?.message || 'No se pudo iniciar la vinculación.';
+    console.error('Error al iniciar vinculación:', error);
+    res.redirect('/');
   }
 });
 
@@ -485,6 +546,9 @@ app.post('/cerrar-sesion', async (_req, res) => {
     authState = null;
     qrDataUrl = null;
     pairingCode = null;
+    pairingNumber = null;
+    pairingRequested = false;
+    pairingError = null;
     connectionState = 'desconectado';
 
     try {
