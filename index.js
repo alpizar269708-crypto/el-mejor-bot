@@ -258,7 +258,7 @@ async function sendText(jid, text, quoted) {
 }
 
 function normalizePhoneNumber(value) {
-  return String(value || '').replace(/\\D/g, '');
+  return String(value || '').replace(/\D/g, '');
 }
 
 async function requestPairingCodeIfNeeded() {
@@ -572,6 +572,9 @@ app.get('/limpiar-whatsapp', async (_req, res) => {
     authState = null;
     qrDataUrl = null;
     pairingCode = null;
+    pairingNumber = null;
+    pairingRequested = false;
+    pairingError = null;
     connectionState = 'desconectado';
 
     try {
