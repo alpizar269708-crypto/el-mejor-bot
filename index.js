@@ -200,6 +200,8 @@ let pairingCode = null;
 let pairingNumber = null;
 let pairingRequested = false;
 let pairingError = null;
+let lastQrAt = 0;
+let loginRefreshPromise = null;
 let connectionState = 'desconectado';
 let reconnectTimer = null;
 const processing = new Set();
@@ -359,6 +361,35 @@ async function handleMessage(update) {
   );
 }
 
+async function restartForFreshLogin() {
+  if (loginRefreshPromise) return loginRefreshPromise;
+
+  loginRefreshPromise = (async () => {
+    pairingError = null;
+    pairingCode = null;
+    qrDataUrl = null;
+    pairingRequested = false;
+
+    if (sock) {
+      try { sock.ev.removeAllListeners(); } catch {}
+      try { sock.ws?.close(); } catch {}
+    }
+
+    sock = null;
+    authState = null;
+    connectionState = 'desconectado';
+
+    try { fs.rmSync(SESSION_DIR, { recursive: true, force: true }); } catch {}
+    fs.mkdirSync(SESSION_DIR, { recursive: true });
+
+    return startSocket(false);
+  })().finally(() => {
+    loginRefreshPromise = null;
+  });
+
+  return loginRefreshPromise;
+}
+
 async function startSocket(restoreSession = true) {
   if (sock && connectionState !== 'desconectado') return sock;
 
@@ -371,6 +402,7 @@ async function startSocket(restoreSession = true) {
     logger: P({ level: 'silent' }),
     browser: Browsers.macOS('Chrome'),
     printQRInTerminal: false,
+    qrTimeout: 120000,
     generateHighQualityLinkPreview: false,
     syncFullHistory: false,
     markOnlineOnConnect: false
@@ -391,6 +423,7 @@ async function startSocket(restoreSession = true) {
         try {
           qrDataUrl = await QRCode.toDataURL(qr);
           pairingCode = null;
+          lastQrAt = Date.now();
         } catch (error) {
           console.error('Error generando QR:', error);
         }
@@ -440,14 +473,22 @@ async function startSocket(restoreSession = true) {
       clearTimeout(reconnectTimer);
       reconnectTimer = setTimeout(() => {
         startSocket(false).catch(error => console.error('Reconexión:', error));
-      }, 3000);
+      }, statusCode === DisconnectReason.restartRequired ? 0 : 1000);
     }
   });
 
   return sock;
 }
 
-app.get('/', (_req, res) => {
+app.get('/', async (_req, res) => {
+  try {
+    if (!authState?.state?.creds?.registered && connectionState === 'desconectado') {
+      await startSocket(false);
+    }
+  } catch (error) {
+    pairingError = error?.message || 'No se pudo iniciar WhatsApp.';
+  }
+
   const qr = qrDataUrl
     ? '<img src="' + qrDataUrl + '" alt="QR" style="width:280px;height:280px">'
     : '<p>No hay QR disponible.</p>';
@@ -474,6 +515,9 @@ button{padding:12px 18px;border:0;border-radius:8px;cursor:pointer}
 <body>
 <h1>🤖 el mejor bot</h1>
 <p>Estado: <b>${connectionState}</b></p>
+<script>
+setTimeout(() => location.reload(), 3000);
+</script>
 <div class="card"><h2>QR</h2>${qr}</div>
 <div class="card">
 <h2>Código de 8 dígitos</h2>
@@ -504,7 +548,6 @@ app.post('/iniciar', async (req, res) => {
   const numero = normalizePhoneNumber(req.body.numero);
 
   if (!numero) return res.status(400).send('Número inválido.');
-
   if (numero.length < 8 || numero.length > 15) {
     return res.status(400).send('Número inválido. Usa código de país y solo números.');
   }
@@ -516,16 +559,8 @@ app.post('/iniciar', async (req, res) => {
     pairingError = null;
     qrDataUrl = null;
 
-    await startSocket(true);
-
-    if (authState?.state?.creds?.registered) {
-      pairingNumber = null;
-      return res.redirect('/');
-    }
-
-    // El código NO se solicita aquí inmediatamente.
-    // Baileys requiere que el socket ya esté en connecting/QR.
-    setTimeout(() => requestPairingCodeIfNeeded(), 1000);
+    await restartForFreshLogin();
+    setTimeout(() => requestPairingCodeIfNeeded(), 500);
 
     res.redirect('/');
   } catch (error) {
@@ -549,6 +584,7 @@ app.post('/cerrar-sesion', async (_req, res) => {
     pairingNumber = null;
     pairingRequested = false;
     pairingError = null;
+    lastQrAt = 0;
     connectionState = 'desconectado';
 
     try {
@@ -587,7 +623,22 @@ app.get('/limpiar-whatsapp', async (_req, res) => {
   res.json({ ok: true, mensaje: 'Sesión limpiada.' });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log('el mejor bot en puerto ' + PORT);
-  startSocket().catch(error => console.error('Error iniciando WhatsApp:', error));
+  try {
+    if (sessionSecurityReady()) await downloadEncryptedSession();
+    const credsPath = path.join(SESSION_DIR, 'creds.json');
+    if (fs.existsSync(credsPath)) {
+      const saved = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
+      if (saved?.registered) {
+        await startSocket(false);
+      } else {
+        console.log('Sin sesión vinculada. Esperando QR o código solicitado por el usuario.');
+      }
+    } else {
+      console.log('Sin sesión vinculada. Esperando QR o código solicitado por el usuario.');
+    }
+  } catch (error) {
+    console.error('Error restaurando sesión inicial:', error.message);
+  }
 });
