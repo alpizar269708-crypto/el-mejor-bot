@@ -519,17 +519,17 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
   const profile = veryHeavy
     ? {
         duration: actualDuration,
-        fps: 8,
-        size: 180,
-        bitrate: '120k',
-        crf: 36
+        fps: 6,
+        size: 160,
+        bitrate: '80k',
+        crf: 40
       }
     : {
         duration: actualDuration,
-        fps: 12,
-        size: 220,
-        bitrate: '160k',
-        crf: 34
+        fps: 8,
+        size: 180,
+        bitrate: '100k',
+        crf: 38
       };
 
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-'));
@@ -656,7 +656,7 @@ async function createSticker(message, sourceMessage, mediaType) {
         pack: 'el mejor bot',
         author: 'el mejor bot',
         type: mediaType === 'video' ? StickerTypes.FULL : StickerTypes.DEFAULT,
-        quality: mediaType === 'video' ? 65 : 90
+        quality: mediaType === 'video' ? 30 : 90
       });
       stickerBuffer = await sticker.toBuffer();
     } catch (firstError) {
@@ -669,7 +669,7 @@ async function createSticker(message, sourceMessage, mediaType) {
         pack: 'el mejor bot',
         author: 'el mejor bot',
         type: StickerTypes.FULL,
-        quality: 45
+        quality: 20
       });
       stickerBuffer = await sticker.toBuffer();
     }
