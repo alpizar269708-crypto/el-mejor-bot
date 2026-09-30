@@ -672,9 +672,9 @@ async function restartForFreshLogin() {
     try { fs.rmSync(SESSION_DIR, { recursive: true, force: true }); } catch {}
     fs.mkdirSync(SESSION_DIR, { recursive: true });
 
-    // Una vinculación nueva debe empezar sin restaurar la sesión anterior.
-    await deleteEncryptedSession();
-
+    // Una vinculación nueva empieza con sesión local limpia,
+    // pero NO borramos todavía el respaldo cifrado de GitHub.
+    // Solo se reemplazará cuando la nueva vinculación termine correctamente.
     return startSocket(false);
   })().finally(() => {
     loginRefreshPromise = null;
