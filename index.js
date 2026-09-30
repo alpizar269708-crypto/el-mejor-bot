@@ -233,7 +233,10 @@ async function uploadEncryptedSession() {
     return false;
   }
 
-  if (creds?.registered !== true) {
+  // Si WhatsApp ya abrió la conexión, la sesión está vinculada aunque
+  // creds.json todavía no haya alcanzado a reflejar registered=true.
+  // Esto evita la carrera entre connection.open y creds.update.
+  if (creds?.registered !== true && connectionState !== 'conectado') {
     lastSessionUploadOk = false;
     lastSessionUploadError = 'La sesión todavía no está vinculada';
     console.log('⏸️ Sesión no guardada: la vinculación de WhatsApp todavía no terminó.');
