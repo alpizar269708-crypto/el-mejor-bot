@@ -1197,14 +1197,28 @@ app.listen(PORT, async () => {
     if (fs.existsSync(credsPath)) {
       const saved = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
 
+      const registered = saved?.registered === true;
+
       console.log(
         '🔐 Credenciales restauradas. registered=' +
-        (saved?.registered === true ? 'true' : 'false') +
-        '. Iniciando WhatsApp...'
+        (registered ? 'true' : 'false') +
+        (registered ? '. Iniciando WhatsApp...' : '. La sesión está incompleta; esperando una nueva vinculación.')
       );
-      // Intentar levantar siempre las credenciales restauradas evita
-      // descartar una sesión recuperable por un campo registered temporal.
-      await startSocket(false);
+
+      if (registered) {
+        await startSocket(false);
+      } else {
+        // No dejar un socket colgado con credenciales de una vinculación
+        // que nunca terminó. Limpiamos esa sesión incompleta para que
+        // /iniciar pueda generar un código nuevo correctamente.
+        try {
+          fs.rmSync(SESSION_DIR, { recursive: true, force: true });
+        } catch {}
+        fs.mkdirSync(SESSION_DIR, { recursive: true });
+        await deleteEncryptedSession();
+        connectionState = 'desconectado';
+        pairingError = 'La sesión anterior estaba incompleta. Genera un nuevo código de vinculación.';
+      }
     } else {
       console.log('Sin sesión local. Esperando QR o código solicitado por el usuario.');
     }
