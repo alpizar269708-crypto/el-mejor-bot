@@ -594,17 +594,17 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
   const profile = veryHeavy
     ? {
         duration: actualDuration,
-        fps: 10,
-        size: 210,
-        bitrate: '125k',
-        crf: 35
+        fps: 8,
+        size: 180,
+        bitrate: '80k',
+        crf: 38
       }
     : {
         duration: actualDuration,
-        fps: 10,
-        size: 210,
-        bitrate: '125k',
-        crf: 35
+        fps: 8,
+        size: 180,
+        bitrate: '80k',
+        crf: 38
       };
 
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-'));
@@ -666,8 +666,8 @@ async function optimizeVideoFallback(buffer, duration = 10) {
     await new Promise((resolve, reject) => {
       ffmpeg(input)
         .videoFilters([
-          'fps=10',
-          'scale=210:210:force_original_aspect_ratio=decrease:flags=fast_bilinear',
+          'fps=8',
+          'scale=180:180:force_original_aspect_ratio=decrease:flags=fast_bilinear',
           'pad=ceil(iw/2)*2:ceil(ih/2)*2'
         ])
         .outputOptions([
@@ -675,10 +675,10 @@ async function optimizeVideoFallback(buffer, duration = 10) {
           '-an',
           '-c:v libx264',
           '-preset ultrafast',
-          '-crf 35',
-          '-b:v 125k',
-          '-maxrate 125k',
-          '-bufsize 240k',
+          '-crf 38',
+          '-b:v 80k',
+          '-maxrate 80k',
+          '-bufsize 160k',
           '-pix_fmt yuv420p',
           '-threads 2',
           '-movflags +faststart'
@@ -731,7 +731,7 @@ async function createSticker(message, sourceMessage, mediaType) {
         pack: 'el mejor bot',
         author: 'el mejor bot',
         type: mediaType === 'video' ? StickerTypes.FULL : StickerTypes.DEFAULT,
-        quality: mediaType === 'video' ? 40 : 90
+        quality: mediaType === 'video' ? 25 : 90
       });
       stickerBuffer = await sticker.toBuffer();
     } catch (firstError) {
@@ -744,7 +744,7 @@ async function createSticker(message, sourceMessage, mediaType) {
         pack: 'el mejor bot',
         author: 'el mejor bot',
         type: StickerTypes.FULL,
-        quality: 30
+        quality: 20
       });
       stickerBuffer = await sticker.toBuffer();
     }
