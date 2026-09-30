@@ -378,53 +378,75 @@ async function requestPairingCodeIfNeeded() {
 async function optimizeHeavyVideo(buffer, videoMessage = {}) {
   const duration = Number(videoMessage.seconds || 0);
 
-  // Los stickers animados deben ser pequeños para que WhatsApp los acepte.
-  // En lugar de optimizar solo videos "pesados", comprimimos todos los videos
-  // y limitamos duración, FPS, resolución y bitrate.
-  const maxDuration = 10;
-  const maxFps = 8;
-  const maxSize = 320;
-  const maxBitrate = '180k';
+  // Procesamos TODOS los videos con una compresión muy agresiva.
+  // La prioridad es que un video 4K/2K/1080p siempre tenga oportunidad
+  // de convertirse en sticker, aunque la calidad final sea muy baja.
+  const profiles = [
+    { duration: 8, fps: 7, size: 240, bitrate: '100k' },
+    { duration: 6, fps: 6, size: 200, bitrate: '75k' },
+    { duration: 5, fps: 5, size: 160, bitrate: '55k' }
+  ];
 
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-'));
   const input = path.join(tempDir, 'input');
-  const output = path.join(tempDir, 'optimized.mp4');
 
   try {
     await fs.promises.writeFile(input, buffer);
 
-    await new Promise((resolve, reject) => {
-      ffmpeg(input)
-        .videoFilters([
-          'fps=' + maxFps,
-          'scale=' + maxSize + ':' + maxSize + ':force_original_aspect_ratio=decrease:flags=fast_bilinear'
-        ])
-        .outputOptions([
-          '-t ' + maxDuration,
-          '-an',
-          '-c:v libx264',
-          '-preset ultrafast',
-          '-b:v ' + maxBitrate,
-          '-maxrate ' + maxBitrate,
-          '-bufsize 360k',
-          '-pix_fmt yuv420p',
-          '-movflags +faststart'
-        ])
-        .on('end', resolve)
-        .on('error', reject)
-        .save(output);
-    });
+    let lastError = null;
 
-    const optimized = await fs.promises.readFile(output);
+    for (const profile of profiles) {
+      const output = path.join(
+        tempDir,
+        'optimized-' + profile.size + '-' + profile.fps + '.mp4'
+      );
 
-    console.log(
-      '🎥 Video para sticker optimizado:',
-      Math.round(buffer.length / 1024 / 1024) + ' MB →',
-      Math.round(optimized.length / 1024 / 1024 * 100) / 100 + ' MB',
-      duration ? '(' + duration + 's)' : ''
-    );
+      try {
+        await new Promise((resolve, reject) => {
+          ffmpeg(input)
+            .videoFilters([
+              'fps=' + profile.fps,
+              'scale=' + profile.size + ':' + profile.size +
+                ':force_original_aspect_ratio=decrease:flags=fast_bilinear'
+            ])
+            .outputOptions([
+              '-t ' + profile.duration,
+              '-an',
+              '-c:v libx264',
+              '-preset ultrafast',
+              '-crf 35',
+              '-b:v ' + profile.bitrate,
+              '-maxrate ' + profile.bitrate,
+              '-bufsize 160k',
+              '-pix_fmt yuv420p',
+              '-movflags +faststart'
+            ])
+            .on('end', resolve)
+            .on('error', reject)
+            .save(output);
+        });
 
-    return { buffer: optimized, optimized: true };
+        const optimized = await fs.promises.readFile(output);
+
+        console.log(
+          '🎥 Video comprimido para sticker:',
+          Math.round(buffer.length / 1024 / 1024 * 100) / 100 + ' MB →',
+          Math.round(optimized.length / 1024 * 100) / 100 + ' KB',
+          '(' + profile.size + 'px, ' + profile.fps + ' fps, ' +
+          profile.duration + 's)'
+        );
+
+        return { buffer: optimized, optimized: true };
+      } catch (error) {
+        lastError = error;
+        console.error(
+          '⚠️ Falló compresión ' + profile.size + 'px:',
+          error.message
+        );
+      }
+    }
+
+    throw lastError || new Error('No se pudo comprimir el video.');
   } finally {
     await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
