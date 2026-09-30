@@ -385,7 +385,7 @@ async function savePersistentMemory() {
   }
 }
 
-function scheduleMemorySave(delay = 15000) {
+function scheduleMemorySave(delay = 120000) {
   if (!memorySecurityReady() || shuttingDown) return;
   if (memorySaveTimer || memorySaveRunning) return;
 
@@ -972,6 +972,7 @@ async function createStickerWork(message, sourceMessage, mediaType) {
     buffer = null;
 
     await sock.sendMessage(jid, { sticker: stickerBuffer }, { quoted: message });
+    rememberActivity(jid, 'video');
   } else {
     const sticker = new Sticker(buffer, {
       pack: 'el mejor bot',
@@ -985,6 +986,7 @@ async function createStickerWork(message, sourceMessage, mediaType) {
     buffer = null;
 
     await sock.sendMessage(jid, { sticker: stickerBuffer }, { quoted: message });
+    rememberActivity(jid, 'image');
   }
 
   await sock.sendMessage(jid, {
