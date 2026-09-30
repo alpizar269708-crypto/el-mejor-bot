@@ -140,42 +140,67 @@ async function collectSession() {
 let uploadTimer = null;
 let uploadRunning = false;
 let uploadAgain = false;
+let lastSessionUploadAt = null;
+let lastSessionUploadOk = null;
+let lastSessionUploadError = null;
+let sessionUploadFailures = 0;
 
 async function uploadEncryptedSession() {
+  lastSessionUploadAt = new Date().toISOString();
+
   if (!sessionSecurityReady()) {
+    lastSessionUploadOk = false;
+    lastSessionUploadError = 'Faltan GITHUB_TOKEN o SESSION_PASSWORD';
     console.warn('⚠️ Sesión NO guardada: faltan GITHUB_TOKEN o SESSION_PASSWORD.');
     return false;
   }
 
   const credsPath = path.join(SESSION_DIR, 'creds.json');
   if (!fs.existsSync(credsPath)) {
+    lastSessionUploadOk = false;
+    lastSessionUploadError = 'No existe creds.json';
     console.warn('⚠️ Sesión NO guardada: todavía no existe creds.json.');
-    return;
+    return false;
   }
+
   if (uploadRunning) {
     uploadAgain = true;
-    return;
+    return false;
   }
 
   uploadRunning = true;
+
   try {
     const files = await collectSession();
+    if (!files['creds.json']) {
+      throw new Error('La sesión está vacía o creds.json no pudo leerse');
+    }
+
     const encrypted = encryptSession(JSON.stringify(files));
     const content = Buffer.from(encrypted, 'utf8').toString('base64');
     const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + ENCRYPTED_SESSION_FILE;
 
     let sha = null;
     const existing = await githubRequest(url);
+
     if (existing.ok) {
-      sha = (await existing.json()).sha;
+      const existingFile = await existing.json();
+      sha = existingFile.sha;
     } else if (existing.status !== 404) {
-      throw new Error('GitHub HTTP ' + existing.status);
+      const details = await existing.text().catch(() => '');
+      throw new Error(
+        'GitHub no permite consultar session.enc: HTTP ' +
+        existing.status +
+        (details ? ' - ' + details.slice(0, 500) : '')
+      );
     }
 
     const body = {
       message: 'Actualizar sesión cifrada de WhatsApp',
-      content
+      content,
+      branch: 'main'
     };
+
     if (sha) body.sha = sha;
 
     const response = await githubRequest(url, {
@@ -186,15 +211,34 @@ async function uploadEncryptedSession() {
 
     if (!response.ok) {
       const details = await response.text().catch(() => '');
-      throw new Error('GitHub HTTP ' + response.status + (details ? ' - ' + details.slice(0, 300) : ''));
+      throw new Error(
+        'GitHub rechazó la escritura: HTTP ' +
+        response.status +
+        (details ? ' - ' + details.slice(0, 700) : '')
+      );
     }
+
+    lastSessionUploadOk = true;
+    lastSessionUploadError = null;
+    sessionUploadFailures = 0;
     console.log('✅ Sesión cifrada guardada en GitHub.');
     return true;
   } catch (error) {
+    lastSessionUploadOk = false;
+    lastSessionUploadError = error.message;
+    sessionUploadFailures += 1;
     console.error('❌ No se pudo guardar la sesión en GitHub:', error.message);
+
+    // Mantener reintentos mientras WhatsApp siga conectado.
+    if (!shuttingDown && connectionState === 'conectado') {
+      const retryDelay = Math.min(15000 * Math.max(1, sessionUploadFailures), 120000);
+      scheduleSessionUpload(retryDelay);
+    }
+
     return false;
   } finally {
     uploadRunning = false;
+
     if (uploadAgain) {
       uploadAgain = false;
       scheduleSessionUpload();
@@ -656,7 +700,9 @@ async function startSocket(restoreSession = true) {
       console.log('🟢 WhatsApp conectado:', lastConnectedAt);
 
       clearTimeout(uploadTimer);
-      uploadEncryptedSession().catch(error => {
+      uploadEncryptedSession().then(ok => {
+        if (!ok) scheduleSessionUpload(5000);
+      }).catch(error => {
         console.error('Guardado inmediato:', error.message);
         scheduleSessionUpload(5000);
       });
@@ -778,16 +824,23 @@ app.get('/keepalive', async (_req, res) => {
 
 app.get('/health', async (_req, res) => {
   let githubSession = 'sin configurar';
+  let githubReadStatus = null;
+
   if (sessionSecurityReady()) {
     try {
       const check = await githubRequest(
         'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + ENCRYPTED_SESSION_FILE
       );
-      githubSession = check.status === 200 ? 'guardada' : check.status === 404 ? 'no existe' : 'error HTTP ' + check.status;
+      githubReadStatus = check.status;
+      githubSession =
+        check.status === 200 ? 'guardada' :
+        check.status === 404 ? 'no existe' :
+        'error HTTP ' + check.status;
     } catch (error) {
       githubSession = 'error: ' + error.message;
     }
   }
+
   res.status(200).json({
     ok: true,
     estado: connectionState,
@@ -795,7 +848,12 @@ app.get('/health', async (_req, res) => {
     uptime: Math.round(process.uptime()),
     sessionLocal: fs.existsSync(path.join(SESSION_DIR, 'creds.json')),
     githubSession,
+    githubReadStatus,
     githubConfigurado: sessionSecurityReady(),
+    ultimaSubidaSesion: lastSessionUploadAt,
+    ultimaSubidaExitosa: lastSessionUploadOk,
+    ultimoErrorSubidaSesion: lastSessionUploadError,
+    fallosConsecutivosSubida: sessionUploadFailures,
     ultimaConexion: lastConnectedAt,
     ultimaDesconexion: lastDisconnectAt,
     ultimoCodigoDesconexion: lastDisconnectCode,
