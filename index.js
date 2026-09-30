@@ -430,13 +430,13 @@ async function requestPairingCodeIfNeeded() {
 async function optimizeHeavyVideo(buffer, videoMessage = {}) {
   const duration = Number(videoMessage.seconds || 0);
 
-  // Procesamos TODOS los videos con una compresión muy agresiva.
-  // La prioridad es que un video 4K/2K/1080p siempre tenga oportunidad
-  // de convertirse en sticker, aunque la calidad final sea muy baja.
+  // Mantener buena calidad visual sin dejar los stickers animados demasiado pesados.
+  // Se conserva el límite máximo de 10 segundos, pero ahora priorizamos
+  // resolución, cuadros por segundo y bitrate para que no se vean pixelados.
   const profiles = [
-    { duration: 8, fps: 7, size: 240, bitrate: '100k' },
-    { duration: 6, fps: 6, size: 200, bitrate: '75k' },
-    { duration: 5, fps: 5, size: 160, bitrate: '55k' }
+    { duration: 10, fps: 12, size: 320, bitrate: '350k' },
+    { duration: 8, fps: 10, size: 288, bitrate: '280k' },
+    { duration: 6, fps: 8, size: 256, bitrate: '220k' }
   ];
 
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-'));
@@ -466,10 +466,10 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
               '-an',
               '-c:v libx264',
               '-preset ultrafast',
-              '-crf 35',
+              '-crf 28',
               '-b:v ' + profile.bitrate,
               '-maxrate ' + profile.bitrate,
-              '-bufsize 160k',
+              '-bufsize 700k',
               '-pix_fmt yuv420p',
               '-movflags +faststart'
             ])
@@ -536,7 +536,7 @@ async function createSticker(message, sourceMessage, mediaType) {
       pack: 'el mejor bot',
       author: 'el mejor bot',
       type: mediaType === 'video' ? StickerTypes.FULL : StickerTypes.DEFAULT,
-      quality: mediaType === 'video' ? 30 : 80
+      quality: mediaType === 'video' ? 65 : 80
     });
 
     const stickerBuffer = await sticker.toBuffer();
