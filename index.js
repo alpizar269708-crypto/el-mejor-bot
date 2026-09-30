@@ -381,10 +381,10 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
   // Los stickers animados deben ser pequeños para que WhatsApp los acepte.
   // En lugar de optimizar solo videos "pesados", comprimimos todos los videos
   // y limitamos duración, FPS, resolución y bitrate.
-  const maxDuration = 6;
+  const maxDuration = 10;
   const maxFps = 8;
-  const maxSize = 384;
-  const maxBitrate = '220k';
+  const maxSize = 320;
+  const maxBitrate = '180k';
 
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-'));
   const input = path.join(tempDir, 'input');
@@ -406,7 +406,7 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
           '-preset ultrafast',
           '-b:v ' + maxBitrate,
           '-maxrate ' + maxBitrate,
-          '-bufsize 440k',
+          '-bufsize 360k',
           '-pix_fmt yuv420p',
           '-movflags +faststart'
         ])
@@ -462,7 +462,7 @@ async function createSticker(message, sourceMessage, mediaType) {
       pack: 'el mejor bot',
       author: 'el mejor bot',
       type: mediaType === 'video' ? StickerTypes.FULL : StickerTypes.DEFAULT,
-      quality: mediaType === 'video' ? 35 : 80
+      quality: mediaType === 'video' ? 30 : 80
     });
 
     const stickerBuffer = await sticker.toBuffer();
