@@ -28,6 +28,7 @@ ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN?.trim();
 const GITHUB_REPO = process.env.GITHUB_REPO || 'alpizar269708-crypto/el-mejor-bot';
+const SESSION_BRANCH = process.env.SESSION_BRANCH || 'session-data';
 const SESSION_PASSWORD = process.env.SESSION_PASSWORD;
 const ENCRYPTED_SESSION_FILE = 'session.enc';
 
@@ -88,7 +89,7 @@ async function downloadEncryptedSession() {
   }
 
   try {
-    const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + ENCRYPTED_SESSION_FILE;
+    const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + ENCRYPTED_SESSION_FILE + '?ref=' + encodeURIComponent(SESSION_BRANCH);
     const response = await githubRequest(url);
     if (response.status === 404) {
       console.log('ℹ️ GitHub: no existe session.enc todavía.');
@@ -126,7 +127,7 @@ async function deleteEncryptedSession() {
   if (!sessionSecurityReady()) return false;
 
   try {
-    const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + ENCRYPTED_SESSION_FILE;
+    const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + ENCRYPTED_SESSION_FILE + '?ref=' + encodeURIComponent(SESSION_BRANCH);
     const existing = await githubRequest(url);
 
     if (existing.status === 404) return true;
@@ -142,7 +143,7 @@ async function deleteEncryptedSession() {
       body: JSON.stringify({
         message: 'Eliminar sesión cifrada para nueva vinculación',
         sha: file.sha,
-        branch: 'main'
+        branch: SESSION_BRANCH
       })
     });
 
@@ -226,7 +227,7 @@ async function uploadEncryptedSession() {
 
     const encrypted = encryptSession(JSON.stringify(files));
     const content = Buffer.from(encrypted, 'utf8').toString('base64');
-    const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + ENCRYPTED_SESSION_FILE;
+    const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + ENCRYPTED_SESSION_FILE + '?ref=' + encodeURIComponent(SESSION_BRANCH);
 
     let sha = null;
     const existing = await githubRequest(url);
@@ -246,7 +247,7 @@ async function uploadEncryptedSession() {
     const body = {
       message: 'Actualizar sesión cifrada de WhatsApp',
       content,
-      branch: 'main'
+      branch: SESSION_BRANCH
     };
 
     if (sha) body.sha = sha;
@@ -989,7 +990,7 @@ app.get('/health', async (_req, res) => {
   if (sessionSecurityReady()) {
     try {
       const check = await githubRequest(
-        'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + ENCRYPTED_SESSION_FILE
+        'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + ENCRYPTED_SESSION_FILE + '?ref=' + encodeURIComponent(SESSION_BRANCH)
       );
       githubReadStatus = check.status;
       githubSession =
