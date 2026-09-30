@@ -377,11 +377,14 @@ async function requestPairingCodeIfNeeded() {
 
 async function optimizeHeavyVideo(buffer, videoMessage = {}) {
   const duration = Number(videoMessage.seconds || 0);
-  const isHeavy = buffer.length >= 12 * 1024 * 1024;
-  const isLong = duration > 10;
 
-  // Los videos normales siguen por la ruta rápida original.
-  if (!isHeavy && !isLong) return { buffer, optimized: false };
+  // Los stickers animados deben ser pequeños para que WhatsApp los acepte.
+  // En lugar de optimizar solo videos "pesados", comprimimos todos los videos
+  // y limitamos duración, FPS, resolución y bitrate.
+  const maxDuration = 6;
+  const maxFps = 8;
+  const maxSize = 384;
+  const maxBitrate = '220k';
 
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-'));
   const input = path.join(tempDir, 'input');
@@ -393,15 +396,18 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
     await new Promise((resolve, reject) => {
       ffmpeg(input)
         .videoFilters([
-          'fps=12',
-          'scale=512:512:force_original_aspect_ratio=decrease:flags=fast_bilinear'
+          'fps=' + maxFps,
+          'scale=' + maxSize + ':' + maxSize + ':force_original_aspect_ratio=decrease:flags=fast_bilinear'
         ])
         .outputOptions([
-          '-t 10',
+          '-t ' + maxDuration,
           '-an',
           '-c:v libx264',
           '-preset ultrafast',
-          '-crf 23',
+          '-b:v ' + maxBitrate,
+          '-maxrate ' + maxBitrate,
+          '-bufsize 440k',
+          '-pix_fmt yuv420p',
           '-movflags +faststart'
         ])
         .on('end', resolve)
@@ -410,10 +416,11 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
     });
 
     const optimized = await fs.promises.readFile(output);
+
     console.log(
-      '🎥 Video pesado/largo optimizado:',
+      '🎥 Video para sticker optimizado:',
       Math.round(buffer.length / 1024 / 1024) + ' MB →',
-      Math.round(optimized.length / 1024 / 1024) + ' MB',
+      Math.round(optimized.length / 1024 / 1024 * 100) / 100 + ' MB',
       duration ? '(' + duration + 's)' : ''
     );
 
@@ -455,7 +462,7 @@ async function createSticker(message, sourceMessage, mediaType) {
       pack: 'el mejor bot',
       author: 'el mejor bot',
       type: mediaType === 'video' ? StickerTypes.FULL : StickerTypes.DEFAULT,
-      quality: 80
+      quality: mediaType === 'video' ? 35 : 80
     });
 
     const stickerBuffer = await sticker.toBuffer();
@@ -536,7 +543,6 @@ async function restartForFreshLogin() {
 
   return loginRefreshPromise;
 }
-
 
 async function startSocket(restoreSession = true) {
   if (shuttingDown) return null;
