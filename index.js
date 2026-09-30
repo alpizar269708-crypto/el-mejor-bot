@@ -122,6 +122,43 @@ async function downloadEncryptedSession() {
   }
 }
 
+async function deleteEncryptedSession() {
+  if (!sessionSecurityReady()) return false;
+
+  try {
+    const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + ENCRYPTED_SESSION_FILE;
+    const existing = await githubRequest(url);
+
+    if (existing.status === 404) return true;
+    if (!existing.ok) {
+      const details = await existing.text().catch(() => '');
+      throw new Error('GitHub HTTP ' + existing.status + (details ? ' - ' + details.slice(0, 300) : ''));
+    }
+
+    const file = await existing.json();
+    const response = await githubRequest(url, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: 'Eliminar sesión cifrada para nueva vinculación',
+        sha: file.sha,
+        branch: 'main'
+      })
+    });
+
+    if (!response.ok) {
+      const details = await response.text().catch(() => '');
+      throw new Error('GitHub rechazó el borrado: HTTP ' + response.status + (details ? ' - ' + details.slice(0, 500) : ''));
+    }
+
+    console.log('🗑️ Sesión cifrada anterior eliminada de GitHub.');
+    return true;
+  } catch (error) {
+    console.error('❌ No se pudo eliminar la sesión cifrada anterior:', error.message);
+    return false;
+  }
+}
+
 async function collectSession() {
   const files = {};
   const walk = async (dir, prefix = '') => {
@@ -620,6 +657,9 @@ async function restartForFreshLogin() {
     try { fs.rmSync(SESSION_DIR, { recursive: true, force: true }); } catch {}
     fs.mkdirSync(SESSION_DIR, { recursive: true });
 
+    // Una vinculación nueva debe empezar sin restaurar la sesión anterior.
+    await deleteEncryptedSession();
+
     return startSocket(false);
   })().finally(() => {
     loginRefreshPromise = null;
@@ -748,6 +788,8 @@ async function startSocket(restoreSession = true) {
           fs.rmSync(SESSION_DIR, { recursive: true, force: true });
         } catch {}
         fs.mkdirSync(SESSION_DIR, { recursive: true });
+        // Evitar que Render restaure otra vez una sesión que WhatsApp marcó como cerrada.
+        await deleteEncryptedSession();
         return;
       }
 
