@@ -558,56 +558,32 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
   const width = Number(videoMessage.width || 0);
   const height = Number(videoMessage.height || 0);
 
-  // Videos cortos y de tamaño razonable: NO hacemos un transcode previo.
-  // wa-sticker-formatter hará la conversión final directamente, evitando
-  // procesar el video dos veces. Esto acelera mucho y conserva mejor calidad.
+  // Primero intentamos convertir el video original directamente a WebP.
+  // Esto conserva la mejor calidad posible y evita un transcode innecesario.
   const sourceMegabytes = buffer.length / 1024 / 1024;
-  const sourceMaxDimension = Math.max(width, height);
+  console.log(
+    '🎥 Preparando video:',
+    width + 'x' + height + ', ' +
+    (duration > 0 ? duration : '?') + 's, ' +
+    Math.round(sourceMegabytes * 100) / 100 + ' MB'
+  );
 
-  if (
-    duration > 0 &&
-    duration <= 10 &&
-    sourceMegabytes <= 5 &&
-    width > 0 &&
-    height > 0 &&
-    sourceMaxDimension <= 1280
-  ) {
-    console.log(
-      '🎥 Video corto: conversión directa a sticker.',
-      '(' + width + 'x' + height + ', ' + duration + 's, ' +
-      Math.round(sourceMegabytes * 100) / 100 + ' MB)'
-    );
-    return { buffer, optimized: false };
-  }
+  return {
+    buffer,
+    duration: duration > 0 ? Math.min(duration, 10) : 10,
+    optimized: false
+  };
+}
 
-  // Perfil adaptativo: los videos muy pesados necesitan un transcode
-  // más agresivo para que WhatsApp pueda convertirlos en sticker sin fallar.
-  // Los videos que no entraron en conversión directa sí necesitan precompresión.
-  // Compresión agresiva para que incluso videos grandes puedan convertirse
-  // en sticker dentro de los límites de CPU/memoria de Render.
-  const veryHeavy = sourceMegabytes >= 8 || sourceMaxDimension >= 720;
+async function transcodeVideoForSticker(buffer, duration = 10, profile = {}) {
+  const actualDuration = Math.min(Math.max(Number(duration) || 10, 0.1), 10);
+  const fps = profile.fps || 10;
+  const size = profile.size || 512;
+  const crf = profile.crf ?? 27;
+  const bitrate = profile.bitrate || '250k';
+  const bufsize = profile.bufsize || '500k';
 
-  // Perfil ultrarrápido: prioriza que el sticker salga rápido.
-  // La conversión a sticker hará la compresión final después.
-  const actualDuration = duration > 0 ? Math.min(duration, 10) : 10;
-
-  const profile = veryHeavy
-    ? {
-        duration: actualDuration,
-        fps: 8,
-        size: 180,
-        bitrate: '80k',
-        crf: 38
-      }
-    : {
-        duration: actualDuration,
-        fps: 8,
-        size: 180,
-        bitrate: '80k',
-        crf: 38
-      };
-
-  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-'));
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-video-'));
   const input = path.join(tempDir, 'input');
   const output = path.join(tempDir, 'optimized.mp4');
 
@@ -617,20 +593,20 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
     await new Promise((resolve, reject) => {
       ffmpeg(input)
         .videoFilters([
-          'fps=' + profile.fps,
-          'scale=' + profile.size + ':' + profile.size +
-            ':force_original_aspect_ratio=decrease:flags=fast_bilinear',
+          'fps=' + fps,
+          'scale=' + size + ':' + size +
+            ':force_original_aspect_ratio=decrease:flags=lanczos',
           'pad=ceil(iw/2)*2:ceil(ih/2)*2'
         ])
         .outputOptions([
-          '-t ' + profile.duration,
+          '-t ' + actualDuration,
           '-an',
           '-c:v libx264',
           '-preset ultrafast',
-          '-crf ' + profile.crf,
-          '-b:v ' + profile.bitrate,
-          '-maxrate ' + profile.bitrate,
-          '-bufsize 240k',
+          '-crf ' + crf,
+          '-b:v ' + bitrate,
+          '-maxrate ' + bitrate,
+          '-bufsize ' + bufsize,
           '-pix_fmt yuv420p',
           '-threads 2',
           '-movflags +faststart'
@@ -643,57 +619,194 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
     const optimized = await fs.promises.readFile(output);
 
     console.log(
-      '🎥 Video optimizado para sticker:',
+      '🎬 Precompresión:',
       Math.round(buffer.length / 1024 / 1024 * 100) / 100 + ' MB →',
       Math.round(optimized.length / 1024 * 100) / 100 + ' KB',
-      '(' + profile.size + 'px, ' + profile.fps + ' fps, ' +
-      profile.duration + 's, ' + (veryHeavy ? 'perfil pesado' : 'perfil normal') + ')'
+      '(' + size + 'px, ' + fps + ' fps, CRF ' + crf + ', ' + bitrate + ')'
     );
 
-    return { buffer: optimized, optimized: true };
+    return optimized;
   } finally {
     await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
 }
+
 async function optimizeVideoFallback(buffer, duration = 10) {
-  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-fallback-'));
-  const input = path.join(tempDir, 'input');
-  const output = path.join(tempDir, 'fallback.mp4');
+  return transcodeVideoForSticker(buffer, duration, {
+    fps: 8,
+    size: 180,
+    bitrate: '80k',
+    bufsize: '160k',
+    crf: 38
+  });
+}
 
-  try {
-    await fs.promises.writeFile(input, buffer);
+const MAX_ANIMATED_STICKER_BYTES = 450 * 1024;
 
-    await new Promise((resolve, reject) => {
-      ffmpeg(input)
-        .videoFilters([
-          'fps=8',
-          'scale=180:180:force_original_aspect_ratio=decrease:flags=fast_bilinear',
-          'pad=ceil(iw/2)*2:ceil(ih/2)*2'
-        ])
-        .outputOptions([
-          '-t ' + Math.min(Math.max(Number(duration) || 10, 0.1), 10),
-          '-an',
-          '-c:v libx264',
-          '-preset ultrafast',
-          '-crf 38',
-          '-b:v 80k',
-          '-maxrate 80k',
-          '-bufsize 160k',
-          '-pix_fmt yuv420p',
-          '-threads 2',
-          '-movflags +faststart'
-        ])
-        .on('end', resolve)
-        .on('error', reject)
-        .save(output);
-    });
-
-    const fallback = await fs.promises.readFile(output);
-    console.log('🆘 Fallback extremo de video:', Math.round(fallback.length / 1024) + ' KB');
-    return fallback;
-  } finally {
-    await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+function getAdaptiveStickerQualities(start = 60, minimum = 18) {
+  const qualities = [];
+  for (let quality = start; quality >= minimum; quality -= 3) {
+    qualities.push(quality);
   }
+  return qualities;
+}
+
+async function buildVideoSticker(buffer, quality) {
+  const sticker = new Sticker(buffer, {
+    pack: 'el mejor bot',
+    author: 'el mejor bot',
+    type: StickerTypes.FULL,
+    quality
+  });
+
+  return sticker.toBuffer();
+}
+
+async function createAdaptiveVideoSticker(buffer, duration) {
+  let bestBuffer = null;
+  let bestQuality = null;
+
+  for (const quality of getAdaptiveStickerQualities(60, 18)) {
+    try {
+      const candidate = await buildVideoSticker(buffer, quality);
+      const sizeKb = Math.round(candidate.length / 1024 * 10) / 10;
+
+      console.log('🎥 Sticker calidad ' + quality + ': ' + sizeKb + ' KB');
+
+      if (!bestBuffer || candidate.length < bestBuffer.length) {
+        bestBuffer = candidate;
+        bestQuality = quality;
+      }
+
+      if (candidate.length <= MAX_ANIMATED_STICKER_BYTES) {
+        console.log(
+          '✅ Sticker aceptado: ' + sizeKb + ' KB con calidad ' + quality
+        );
+        return candidate;
+      }
+    } catch (error) {
+      console.warn(
+        '⚠️ Falló calidad ' + quality + ': ' +
+        (error?.message || error)
+      );
+    }
+  }
+
+  // Si el video original siguió quedando grande, lo reducimos conservando
+  // buena calidad y repetimos la búsqueda de mayor calidad que entre.
+  const compressed = await transcodeVideoForSticker(buffer, duration, {
+    fps: 10,
+    size: 512,
+    bitrate: '250k',
+    bufsize: '500k',
+    crf: 27
+  });
+
+  for (const quality of getAdaptiveStickerQualities(60, 18)) {
+    try {
+      const candidate = await buildVideoSticker(compressed, quality);
+      const sizeKb = Math.round(candidate.length / 1024 * 10) / 10;
+
+      console.log('🎥 Sticker precomprimido calidad ' + quality + ': ' + sizeKb + ' KB');
+
+      if (!bestBuffer || candidate.length < bestBuffer.length) {
+        bestBuffer = candidate;
+        bestQuality = quality;
+      }
+
+      if (candidate.length <= MAX_ANIMATED_STICKER_BYTES) {
+        console.log(
+          '✅ Sticker aceptado tras precompresión: ' +
+          sizeKb + ' KB con calidad ' + quality
+        );
+        return candidate;
+      }
+    } catch (error) {
+      console.warn(
+        '⚠️ Falló precompresión calidad ' + quality + ': ' +
+        (error?.message || error)
+      );
+    }
+  }
+
+  // Último perfil de buena compresión antes del perfil extremo.
+  const compressedMedium = await transcodeVideoForSticker(buffer, duration, {
+    fps: 8,
+    size: 360,
+    bitrate: '140k',
+    bufsize: '280k',
+    crf: 32
+  });
+
+  for (const quality of getAdaptiveStickerQualities(48, 18)) {
+    try {
+      const candidate = await buildVideoSticker(compressedMedium, quality);
+      const sizeKb = Math.round(candidate.length / 1024 * 10) / 10;
+
+      console.log('🎥 Sticker medio calidad ' + quality + ': ' + sizeKb + ' KB');
+
+      if (!bestBuffer || candidate.length < bestBuffer.length) {
+        bestBuffer = candidate;
+        bestQuality = quality;
+      }
+
+      if (candidate.length <= MAX_ANIMATED_STICKER_BYTES) {
+        console.log(
+          '✅ Sticker aceptado con compresión media: ' +
+          sizeKb + ' KB con calidad ' + quality
+        );
+        return candidate;
+      }
+    } catch (error) {
+      console.warn(
+        '⚠️ Falló compresión media calidad ' + quality + ': ' +
+        (error?.message || error)
+      );
+    }
+  }
+
+  // Último recurso: mantener el comportamiento pequeño que ya funcionaba,
+  // pero todavía buscando la mejor calidad posible de 3 en 3.
+  const fallback = await optimizeVideoFallback(buffer, duration);
+
+  for (const quality of getAdaptiveStickerQualities(30, 18)) {
+    try {
+      const candidate = await buildVideoSticker(fallback, quality);
+      const sizeKb = Math.round(candidate.length / 1024 * 10) / 10;
+
+      console.log('🆘 Sticker extremo calidad ' + quality + ': ' + sizeKb + ' KB');
+
+      if (!bestBuffer || candidate.length < bestBuffer.length) {
+        bestBuffer = candidate;
+        bestQuality = quality;
+      }
+
+      if (candidate.length <= MAX_ANIMATED_STICKER_BYTES) {
+        console.log(
+          '✅ Sticker aceptado con perfil extremo: ' +
+          sizeKb + ' KB con calidad ' + quality
+        );
+        return candidate;
+      }
+    } catch (error) {
+      console.warn(
+        '⚠️ Falló perfil extremo calidad ' + quality + ': ' +
+        (error?.message || error)
+      );
+    }
+  }
+
+  if (bestBuffer) {
+    console.warn(
+      '⚠️ No se logró bajar de ' +
+      Math.round(MAX_ANIMATED_STICKER_BYTES / 1024) +
+      ' KB. Se enviará la versión más pequeña disponible (calidad ' +
+      bestQuality + ').'
+    );
+    return bestBuffer;
+  }
+
+  throw new Error('No se pudo convertir el video en sticker.');
 }
 
 async function createSticker(message, sourceMessage, mediaType) {
@@ -718,33 +831,22 @@ async function createSticker(message, sourceMessage, mediaType) {
       }
     );
 
+    let stickerBuffer;
+
     if (mediaType === 'video') {
       const videoMessage = unwrapMessage(sourceMessage)?.videoMessage || {};
       const optimized = await optimizeHeavyVideo(buffer, videoMessage);
       buffer = optimized.buffer;
-    }
-
-    let stickerBuffer;
-
-    try {
+      stickerBuffer = await createAdaptiveVideoSticker(
+        buffer,
+        optimized.duration || Number(videoMessage.seconds || 10)
+      );
+    } else {
       const sticker = new Sticker(buffer, {
         pack: 'el mejor bot',
         author: 'el mejor bot',
-        type: mediaType === 'video' ? StickerTypes.FULL : StickerTypes.DEFAULT,
-        quality: mediaType === 'video' ? 25 : 90
-      });
-      stickerBuffer = await sticker.toBuffer();
-    } catch (firstError) {
-      if (mediaType !== 'video') throw firstError;
-
-      console.warn('⚠️ Primer intento de sticker de video falló. Reintentando con compresión extrema.');
-
-      const fallback = await optimizeVideoFallback(buffer, Number(unwrapMessage(sourceMessage)?.videoMessage?.seconds || 10));
-      const sticker = new Sticker(fallback, {
-        pack: 'el mejor bot',
-        author: 'el mejor bot',
-        type: StickerTypes.FULL,
-        quality: 20
+        type: StickerTypes.DEFAULT,
+        quality: 90
       });
       stickerBuffer = await sticker.toBuffer();
     }
