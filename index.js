@@ -699,6 +699,9 @@ async function createFastVideoSticker(buffer, duration) {
     crf: 31
   });
 
+  // Ya no necesitamos conservar el HD original en RAM.
+  buffer = null;
+
   let candidate = await tryQuality(45);
   if (candidate.length <= MAX_ANIMATED_STICKER_BYTES) return candidate;
 
