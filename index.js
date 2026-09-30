@@ -482,19 +482,31 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
   const width = Number(videoMessage.width || 0);
   const height = Number(videoMessage.height || 0);
 
-  // Si el video ya es corto y pequeño, evitamos un segundo transcode.
-  // Esto acelera mucho los stickers y conserva mejor la imagen original.
-  if (duration > 0 && duration <= 10 && width > 0 && height > 0 &&
-      Math.max(width, height) <= 320) {
+  // Videos cortos y de tamaño razonable: NO hacemos un transcode previo.
+  // wa-sticker-formatter hará la conversión final directamente, evitando
+  // procesar el video dos veces. Esto acelera mucho y conserva mejor calidad.
+  const sourceMegabytes = buffer.length / 1024 / 1024;
+  const sourceMaxDimension = Math.max(width, height);
+
+  if (
+    duration > 0 &&
+    duration <= 10 &&
+    sourceMegabytes <= 5 &&
+    width > 0 &&
+    height > 0 &&
+    sourceMaxDimension <= 1280
+  ) {
     console.log(
-      '🎥 Video apto para sticker: se evita compresión extra.',
-      '(' + width + 'x' + height + ', ' + duration + 's)'
+      '🎥 Video corto: conversión directa a sticker.',
+      '(' + width + 'x' + height + ', ' + duration + 's, ' +
+      Math.round(sourceMegabytes * 100) / 100 + ' MB)'
     );
     return { buffer, optimized: false };
   }
 
   // Perfil adaptativo: los videos muy pesados necesitan un transcode
   // más agresivo para que WhatsApp pueda convertirlos en sticker sin fallar.
+  // Los videos que no entraron en conversión directa sí necesitan precompresión.
   const sourceMegabytes = buffer.length / 1024 / 1024;
   const sourceMaxDimension = Math.max(width, height);
   // Compresión agresiva para que incluso videos grandes puedan convertirse
