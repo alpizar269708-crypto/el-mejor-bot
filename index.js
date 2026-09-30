@@ -31,6 +31,7 @@ const GITHUB_REPO = process.env.GITHUB_REPO || 'alpizar269708-crypto/el-mejor-bo
 const SESSION_BRANCH = process.env.SESSION_BRANCH || 'session-data';
 const SESSION_PASSWORD = process.env.SESSION_PASSWORD;
 const ENCRYPTED_SESSION_FILE = 'session.enc';
+const LAST_GOOD_SESSION_FILE = 'session.last-good.enc';
 
 function sessionSecurityReady() {
   return Boolean(GITHUB_TOKEN && SESSION_PASSWORD);
@@ -88,13 +89,11 @@ async function downloadEncryptedSession() {
     return false;
   }
 
-  try {
-    const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + ENCRYPTED_SESSION_FILE + '?ref=' + encodeURIComponent(SESSION_BRANCH);
+  async function tryRestore(filename, label) {
+    const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + filename + '?ref=' + encodeURIComponent(SESSION_BRANCH);
     const response = await githubRequest(url);
-    if (response.status === 404) {
-      console.log('ℹ️ GitHub: no existe session.enc todavía.');
-      return false;
-    }
+
+    if (response.status === 404) return false;
     if (!response.ok) {
       const details = await response.text().catch(() => '');
       throw new Error('GitHub HTTP ' + response.status + (details ? ' - ' + details.slice(0, 300) : ''));
@@ -103,11 +102,11 @@ async function downloadEncryptedSession() {
     const file = await response.json();
     const encrypted = Buffer.from(file.content.replace(/\n/g, ''), 'base64').toString('utf8');
     const decrypted = decryptSession(encrypted);
+    const files = JSON.parse(decrypted);
 
     fs.rmSync(SESSION_DIR, { recursive: true, force: true });
     fs.mkdirSync(SESSION_DIR, { recursive: true });
 
-    const files = JSON.parse(decrypted);
     for (const [relativePath, base64] of Object.entries(files)) {
       const target = path.join(SESSION_DIR, relativePath);
       if (!target.startsWith(SESSION_DIR + path.sep)) throw new Error('Ruta de sesión inválida');
@@ -115,14 +114,35 @@ async function downloadEncryptedSession() {
       fs.writeFileSync(target, Buffer.from(base64, 'base64'));
     }
 
-    console.log('Sesión cifrada restaurada desde GitHub.');
+    console.log(label);
     return true;
+  }
+
+  try {
+    if (await tryRestore(ENCRYPTED_SESSION_FILE, 'Sesión cifrada restaurada desde GitHub.')) {
+      return true;
+    }
+
+    if (await tryRestore(LAST_GOOD_SESSION_FILE, '🛡️ Sesión restaurada desde el respaldo de última sesión válida.')) {
+      return true;
+    }
+
+    console.log('ℹ️ GitHub: todavía no existe un respaldo de sesión.');
+    return false;
   } catch (error) {
-    console.error('No se pudo restaurar la sesión cifrada:', error.message);
+    console.error('⚠️ No se pudo restaurar la sesión principal:', error.message);
+
+    try {
+      if (await tryRestore(LAST_GOOD_SESSION_FILE, '🛡️ Sesión restaurada desde el respaldo de última sesión válida.')) {
+        return true;
+      }
+    } catch (backupError) {
+      console.error('❌ Tampoco se pudo restaurar el respaldo de seguridad:', backupError.message);
+    }
+
     return false;
   }
 }
-
 async function deleteEncryptedSession() {
   if (!sessionSecurityReady()) return false;
 
@@ -250,6 +270,47 @@ async function uploadEncryptedSession() {
         existing.status +
         (details ? ' - ' + details.slice(0, 500) : '')
       );
+    }
+
+    // Antes de reemplazar la sesión actual, conservar la última sesión válida.
+    // Si un deploy defectuoso genera credenciales registradas pero problemáticas,
+    // esta copia permite recuperar la sesión anterior.
+    if (sha && existing.ok) {
+      const existingFile = await existing.clone().json().catch(() => null);
+      if (existingFile?.content) {
+        const backupUrl = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + LAST_GOOD_SESSION_FILE + '?ref=' + encodeURIComponent(SESSION_BRANCH);
+        const backupExisting = await githubRequest(backupUrl);
+        let backupSha = null;
+
+        if (backupExisting.ok) {
+          const backupFile = await backupExisting.json();
+          backupSha = backupFile.sha;
+        } else if (backupExisting.status !== 404) {
+          const details = await backupExisting.text().catch(() => '');
+          throw new Error('No se pudo consultar el respaldo de seguridad: HTTP ' + backupExisting.status + (details ? ' - ' + details.slice(0, 500) : ''));
+        }
+
+        const backupBody = {
+          message: 'Conservar última sesión válida de WhatsApp',
+          content: existingFile.content.replace(/\n/g, ''),
+          branch: SESSION_BRANCH
+        };
+
+        if (backupSha) backupBody.sha = backupSha;
+
+        const backupResponse = await githubRequest(backupUrl, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(backupBody)
+        });
+
+        if (!backupResponse.ok) {
+          const details = await backupResponse.text().catch(() => '');
+          throw new Error('No se pudo guardar el respaldo de seguridad: HTTP ' + backupResponse.status + (details ? ' - ' + details.slice(0, 700) : ''));
+        }
+
+        console.log('🛡️ Última sesión válida respaldada antes de actualizar.');
+      }
     }
 
     const body = {
@@ -1062,6 +1123,7 @@ app.get('/health', async (_req, res) => {
     sessionLocal: fs.existsSync(path.join(SESSION_DIR, 'creds.json')),
     githubSession,
     githubReadStatus,
+    respaldoUltimaSesion: LAST_GOOD_SESSION_FILE,
     githubConfigurado: sessionSecurityReady(),
     ultimaSubidaSesion: lastSessionUploadAt,
     ultimaSubidaExitosa: lastSessionUploadOk,
