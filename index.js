@@ -519,17 +519,17 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
   const profile = veryHeavy
     ? {
         duration: actualDuration,
-        fps: 6,
-        size: 160,
-        bitrate: '80k',
-        crf: 40
+        fps: 7,
+        size: 170,
+        bitrate: '95k',
+        crf: 38
       }
     : {
         duration: actualDuration,
-        fps: 8,
-        size: 180,
-        bitrate: '100k',
-        crf: 38
+        fps: 10,
+        size: 200,
+        bitrate: '120k',
+        crf: 36
       };
 
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-'));
@@ -591,8 +591,8 @@ async function optimizeVideoFallback(buffer, duration = 10) {
     await new Promise((resolve, reject) => {
       ffmpeg(input)
         .videoFilters([
-          'fps=10',
-          'scale=180:180:force_original_aspect_ratio=decrease:flags=fast_bilinear',
+          'fps=12',
+          'scale=200:200:force_original_aspect_ratio=decrease:flags=fast_bilinear',
           'pad=ceil(iw/2)*2:ceil(ih/2)*2'
         ])
         .outputOptions([
@@ -600,9 +600,9 @@ async function optimizeVideoFallback(buffer, duration = 10) {
           '-an',
           '-c:v libx264',
           '-preset ultrafast',
-          '-crf 36',
-          '-b:v 120k',
-          '-maxrate 120k',
+          '-crf 34',
+          '-b:v 140k',
+          '-maxrate 140k',
           '-bufsize 240k',
           '-pix_fmt yuv420p',
           '-threads 2',
@@ -656,7 +656,7 @@ async function createSticker(message, sourceMessage, mediaType) {
         pack: 'el mejor bot',
         author: 'el mejor bot',
         type: mediaType === 'video' ? StickerTypes.FULL : StickerTypes.DEFAULT,
-        quality: mediaType === 'video' ? 30 : 90
+        quality: mediaType === 'video' ? 35 : 90
       });
       stickerBuffer = await sticker.toBuffer();
     } catch (firstError) {
@@ -669,7 +669,7 @@ async function createSticker(message, sourceMessage, mediaType) {
         pack: 'el mejor bot',
         author: 'el mejor bot',
         type: StickerTypes.FULL,
-        quality: 20
+        quality: 25
       });
       stickerBuffer = await sticker.toBuffer();
     }
