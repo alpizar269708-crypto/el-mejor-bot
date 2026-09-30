@@ -507,24 +507,24 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
   // Perfil adaptativo: los videos muy pesados necesitan un transcode
   // más agresivo para que WhatsApp pueda convertirlos en sticker sin fallar.
   // Los videos que no entraron en conversión directa sí necesitan precompresión.
-  const sourceMegabytes = buffer.length / 1024 / 1024;
-  const sourceMaxDimension = Math.max(width, height);
   // Compresión agresiva para que incluso videos grandes puedan convertirse
   // en sticker dentro de los límites de CPU/memoria de Render.
   const veryHeavy = sourceMegabytes >= 8 || sourceMaxDimension >= 720;
 
   // Perfil ultrarrápido: prioriza que el sticker salga rápido.
   // La conversión a sticker hará la compresión final después.
+  const actualDuration = duration > 0 ? Math.min(duration, 10) : 10;
+
   const profile = veryHeavy
     ? {
-        duration: 10,
+        duration: actualDuration,
         fps: 8,
         size: 180,
         bitrate: '120k',
         crf: 36
       }
     : {
-        duration: 10,
+        duration: actualDuration,
         fps: 12,
         size: 220,
         bitrate: '160k',
@@ -578,7 +578,7 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
     await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
 }
-async function optimizeVideoFallback(buffer) {
+async function optimizeVideoFallback(buffer, duration = 10) {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-fallback-'));
   const input = path.join(tempDir, 'input');
   const output = path.join(tempDir, 'fallback.mp4');
@@ -593,7 +593,7 @@ async function optimizeVideoFallback(buffer) {
           'scale=180:180:force_original_aspect_ratio=decrease:flags=fast_bilinear'
         ])
         .outputOptions([
-          '-t 10',
+          '-t ' + Math.min(Math.max(Number(duration) || 10, 0.1), 10),
           '-an',
           '-c:v libx264',
           '-preset ultrafast',
@@ -661,7 +661,7 @@ async function createSticker(message, sourceMessage, mediaType) {
 
       console.warn('⚠️ Primer intento de sticker de video falló. Reintentando con compresión extrema.');
 
-      const fallback = await optimizeVideoFallback(buffer);
+      const fallback = await optimizeVideoFallback(buffer, Number(unwrapMessage(sourceMessage)?.videoMessage?.seconds || 10));
       const sticker = new Sticker(fallback, {
         pack: 'el mejor bot',
         author: 'el mejor bot',
@@ -677,7 +677,20 @@ async function createSticker(message, sourceMessage, mediaType) {
     });
   } catch (error) {
     console.error('Error creando sticker:', error);
-    await sendText(jid, '❌ No pude crear el sticker.', message).catch(() => {});
+
+    let reason = error?.message || error?.toString?.() || 'Error desconocido';
+    reason = reason
+      .replace(/\s+/g, ' ')
+      .replace(/^Error:\s*/i, '')
+      .trim();
+
+    if (reason.length > 220) reason = reason.slice(0, 217) + '...';
+
+    await sendText(
+      jid,
+      '❌ No pude crear el sticker.\\n📌 Razón: ' + reason,
+      message
+    ).catch(() => {});
   } finally {
     processing.delete(id);
   }
