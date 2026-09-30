@@ -506,15 +506,15 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
   const profile = veryHeavy
     ? {
         duration: 8,
-        fps: 6,
+        fps: 8,
         size: 180,
         bitrate: '120k',
         crf: 36
       }
     : {
         duration: 8,
-        fps: 8,
-        size: 200,
+        fps: 12,
+        size: 220,
         bitrate: '160k',
         crf: 34
       };
@@ -577,7 +577,7 @@ async function optimizeVideoFallback(buffer) {
     await new Promise((resolve, reject) => {
       ffmpeg(input)
         .videoFilters([
-          'fps=6',
+          'fps=10',
           'scale=180:180:force_original_aspect_ratio=decrease:flags=fast_bilinear'
         ])
         .outputOptions([
