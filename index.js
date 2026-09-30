@@ -527,17 +527,17 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
   const profile = veryHeavy
     ? {
         duration: actualDuration,
-        fps: 7,
-        size: 170,
-        bitrate: '95k',
-        crf: 38
+        fps: 8,
+        size: 200,
+        bitrate: '115k',
+        crf: 36
       }
     : {
         duration: actualDuration,
-        fps: 10,
-        size: 200,
-        bitrate: '120k',
-        crf: 36
+        fps: 12,
+        size: 220,
+        bitrate: '135k',
+        crf: 34
       };
 
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-'));
@@ -600,7 +600,7 @@ async function optimizeVideoFallback(buffer, duration = 10) {
       ffmpeg(input)
         .videoFilters([
           'fps=12',
-          'scale=200:200:force_original_aspect_ratio=decrease:flags=fast_bilinear',
+          'scale=220:220:force_original_aspect_ratio=decrease:flags=fast_bilinear',
           'pad=ceil(iw/2)*2:ceil(ih/2)*2'
         ])
         .outputOptions([
@@ -608,9 +608,9 @@ async function optimizeVideoFallback(buffer, duration = 10) {
           '-an',
           '-c:v libx264',
           '-preset ultrafast',
-          '-crf 34',
-          '-b:v 140k',
-          '-maxrate 140k',
+          '-crf 32',
+          '-b:v 160k',
+          '-maxrate 160k',
           '-bufsize 240k',
           '-pix_fmt yuv420p',
           '-threads 2',
@@ -664,7 +664,7 @@ async function createSticker(message, sourceMessage, mediaType) {
         pack: 'el mejor bot',
         author: 'el mejor bot',
         type: mediaType === 'video' ? StickerTypes.FULL : StickerTypes.DEFAULT,
-        quality: mediaType === 'video' ? 35 : 90
+        quality: mediaType === 'video' ? 40 : 90
       });
       stickerBuffer = await sticker.toBuffer();
     } catch (firstError) {
@@ -677,7 +677,7 @@ async function createSticker(message, sourceMessage, mediaType) {
         pack: 'el mejor bot',
         author: 'el mejor bot',
         type: StickerTypes.FULL,
-        quality: 25
+        quality: 30
       });
       stickerBuffer = await sticker.toBuffer();
     }
