@@ -401,8 +401,9 @@ let shuttingDown = false;
 const processing = new Set();
 
 function getText(message) {
-  const m = message?.message;
+  const m = unwrapMessage(message);
   if (!m) return '';
+
   return (
     m.conversation ||
     m.extendedTextMessage?.text ||
