@@ -782,8 +782,11 @@ async function startSocket(restoreSession = true) {
   const newSock = makeWASocket({
     auth: authState.state,
     logger: P({ level: 'silent' }),
-    browser: Browsers.macOS('Chrome'),
+    browser: ['Windows', 'Chrome', 'Chrome 114.0.5735.198'],
     printQRInTerminal: false,
+    connectTimeoutMs: 60000,
+    defaultQueryTimeoutMs: 60000,
+    keepAliveIntervalMs: 10000,
     qrTimeout: 120000,
     generateHighQualityLinkPreview: false,
     syncFullHistory: false,
