@@ -641,7 +641,7 @@ async function createSticker(message, sourceMessage, mediaType) {
         pack: 'el mejor bot',
         author: 'el mejor bot',
         type: mediaType === 'video' ? StickerTypes.FULL : StickerTypes.DEFAULT,
-        quality: mediaType === 'video' ? 55 : 90
+        quality: mediaType === 'video' ? 65 : 90
       });
       stickerBuffer = await sticker.toBuffer();
     } catch (firstError) {
@@ -654,7 +654,7 @@ async function createSticker(message, sourceMessage, mediaType) {
         pack: 'el mejor bot',
         author: 'el mejor bot',
         type: StickerTypes.FULL,
-        quality: 40
+        quality: 45
       });
       stickerBuffer = await sticker.toBuffer();
     }
