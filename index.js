@@ -505,14 +505,14 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
   // La conversión a sticker hará la compresión final después.
   const profile = veryHeavy
     ? {
-        duration: 8,
+        duration: 10,
         fps: 8,
         size: 180,
         bitrate: '120k',
         crf: 36
       }
     : {
-        duration: 8,
+        duration: 10,
         fps: 12,
         size: 220,
         bitrate: '160k',
@@ -581,7 +581,7 @@ async function optimizeVideoFallback(buffer) {
           'scale=180:180:force_original_aspect_ratio=decrease:flags=fast_bilinear'
         ])
         .outputOptions([
-          '-t 8',
+          '-t 10',
           '-an',
           '-c:v libx264',
           '-preset ultrafast',
