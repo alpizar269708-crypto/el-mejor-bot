@@ -558,19 +558,18 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
   const width = Number(videoMessage.width || 0);
   const height = Number(videoMessage.height || 0);
 
-  // Primero intentamos convertir el video original directamente a WebP.
-  // Esto conserva la mejor calidad posible y evita un transcode innecesario.
-  const sourceMegabytes = buffer.length / 1024 / 1024;
+  const actualDuration = duration > 0 ? Math.min(duration, 10) : 10;
+
   console.log(
-    '🎥 Preparando video:',
+    '🎥 Video recibido:',
     width + 'x' + height + ', ' +
-    (duration > 0 ? duration : '?') + 's, ' +
-    Math.round(sourceMegabytes * 100) / 100 + ' MB'
+    actualDuration + 's, ' +
+    Math.round(buffer.length / 1024 / 1024 * 100) / 100 + ' MB'
   );
 
   return {
     buffer,
-    duration: duration > 0 ? Math.min(duration, 10) : 10,
+    duration: actualDuration,
     optimized: false
   };
 }
@@ -578,10 +577,10 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
 async function transcodeVideoForSticker(buffer, duration = 10, profile = {}) {
   const actualDuration = Math.min(Math.max(Number(duration) || 10, 0.1), 10);
   const fps = profile.fps || 10;
-  const size = profile.size || 512;
-  const crf = profile.crf ?? 27;
-  const bitrate = profile.bitrate || '250k';
-  const bufsize = profile.bufsize || '500k';
+  const size = profile.size || 420;
+  const crf = profile.crf ?? 31;
+  const bitrate = profile.bitrate || '130k';
+  const bufsize = profile.bufsize || '260k';
 
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-video-'));
   const input = path.join(tempDir, 'input');
@@ -595,7 +594,7 @@ async function transcodeVideoForSticker(buffer, duration = 10, profile = {}) {
         .videoFilters([
           'fps=' + fps,
           'scale=' + size + ':' + size +
-            ':force_original_aspect_ratio=decrease:flags=lanczos',
+            ':force_original_aspect_ratio=decrease:flags=fast_bilinear',
           'pad=ceil(iw/2)*2:ceil(ih/2)*2'
         ])
         .outputOptions([
@@ -609,6 +608,8 @@ async function transcodeVideoForSticker(buffer, duration = 10, profile = {}) {
           '-bufsize ' + bufsize,
           '-pix_fmt yuv420p',
           '-threads 2',
+          '-filter_threads 1',
+          '-filter_complex_threads 1',
           '-movflags +faststart'
         ])
         .on('end', resolve)
@@ -631,24 +632,34 @@ async function transcodeVideoForSticker(buffer, duration = 10, profile = {}) {
   }
 }
 
-async function optimizeVideoFallback(buffer, duration = 10) {
-  return transcodeVideoForSticker(buffer, duration, {
-    fps: 8,
-    size: 180,
-    bitrate: '80k',
-    bufsize: '160k',
-    crf: 38
+const MAX_ANIMATED_STICKER_BYTES = 450 * 1024;
+const videoQueue = [];
+let videoQueueRunning = false;
+
+function enqueueVideoSticker(task) {
+  return new Promise((resolve, reject) => {
+    videoQueue.push({ task, resolve, reject });
+    drainVideoQueue();
   });
 }
 
-const MAX_ANIMATED_STICKER_BYTES = 450 * 1024;
+async function drainVideoQueue() {
+  if (videoQueueRunning) return;
+  videoQueueRunning = true;
 
-function getAdaptiveStickerQualities(start = 60, minimum = 18) {
-  const qualities = [];
-  for (let quality = start; quality >= minimum; quality -= 3) {
-    qualities.push(quality);
+  try {
+    while (videoQueue.length) {
+      const job = videoQueue.shift();
+
+      try {
+        job.resolve(await job.task());
+      } catch (error) {
+        job.reject(error);
+      }
+    }
+  } finally {
+    videoQueueRunning = false;
   }
-  return qualities;
 }
 
 async function buildVideoSticker(buffer, quality) {
@@ -662,151 +673,104 @@ async function buildVideoSticker(buffer, quality) {
   return sticker.toBuffer();
 }
 
-async function createAdaptiveVideoSticker(buffer, duration) {
+async function createFastVideoSticker(buffer, duration) {
+  let workingBuffer = buffer;
   let bestBuffer = null;
-  let bestQuality = null;
 
-  for (const quality of getAdaptiveStickerQualities(60, 18)) {
-    try {
-      const candidate = await buildVideoSticker(buffer, quality);
-      const sizeKb = Math.round(candidate.length / 1024 * 10) / 10;
+  const tryQuality = async quality => {
+    const candidate = await buildVideoSticker(workingBuffer, quality);
+    const sizeKb = Math.round(candidate.length / 1024 * 10) / 10;
 
-      console.log('🎥 Sticker calidad ' + quality + ': ' + sizeKb + ' KB');
+    console.log('🎥 Sticker calidad ' + quality + ': ' + sizeKb + ' KB');
 
-      if (!bestBuffer || candidate.length < bestBuffer.length) {
-        bestBuffer = candidate;
-        bestQuality = quality;
-      }
-
-      if (candidate.length <= MAX_ANIMATED_STICKER_BYTES) {
-        console.log(
-          '✅ Sticker aceptado: ' + sizeKb + ' KB con calidad ' + quality
-        );
-        return candidate;
-      }
-    } catch (error) {
-      console.warn(
-        '⚠️ Falló calidad ' + quality + ': ' +
-        (error?.message || error)
-      );
+    if (!bestBuffer || candidate.length < bestBuffer.length) {
+      bestBuffer = candidate;
     }
-  }
 
-  // Si el video original siguió quedando grande, lo reducimos conservando
-  // buena calidad y repetimos la búsqueda de mayor calidad que entre.
-  const compressed = await transcodeVideoForSticker(buffer, duration, {
+    return candidate;
+  };
+
+  // Una sola precompresión de buena calidad para HD.
+  workingBuffer = await transcodeVideoForSticker(buffer, duration, {
     fps: 10,
-    size: 512,
-    bitrate: '250k',
-    bufsize: '500k',
-    crf: 27
+    size: 420,
+    bitrate: '130k',
+    bufsize: '260k',
+    crf: 31
   });
 
-  for (const quality of getAdaptiveStickerQualities(60, 18)) {
-    try {
-      const candidate = await buildVideoSticker(compressed, quality);
-      const sizeKb = Math.round(candidate.length / 1024 * 10) / 10;
+  let candidate = await tryQuality(45);
+  if (candidate.length <= MAX_ANIMATED_STICKER_BYTES) return candidate;
 
-      console.log('🎥 Sticker precomprimido calidad ' + quality + ': ' + sizeKb + ' KB');
+  candidate = await tryQuality(30);
+  if (candidate.length <= MAX_ANIMATED_STICKER_BYTES) return candidate;
 
-      if (!bestBuffer || candidate.length < bestBuffer.length) {
-        bestBuffer = candidate;
-        bestQuality = quality;
-      }
-
-      if (candidate.length <= MAX_ANIMATED_STICKER_BYTES) {
-        console.log(
-          '✅ Sticker aceptado tras precompresión: ' +
-          sizeKb + ' KB con calidad ' + quality
-        );
-        return candidate;
-      }
-    } catch (error) {
-      console.warn(
-        '⚠️ Falló precompresión calidad ' + quality + ': ' +
-        (error?.message || error)
-      );
-    }
-  }
-
-  // Último perfil de buena compresión antes del perfil extremo.
-  const compressedMedium = await transcodeVideoForSticker(buffer, duration, {
+  // Segundo y último transcode: reduce resolución y bitrate sin irse
+  // directamente a una calidad extrema.
+  workingBuffer = await transcodeVideoForSticker(workingBuffer, duration, {
     fps: 8,
-    size: 360,
-    bitrate: '140k',
-    bufsize: '280k',
-    crf: 32
+    size: 300,
+    bitrate: '95k',
+    bufsize: '190k',
+    crf: 35
   });
 
-  for (const quality of getAdaptiveStickerQualities(48, 18)) {
-    try {
-      const candidate = await buildVideoSticker(compressedMedium, quality);
-      const sizeKb = Math.round(candidate.length / 1024 * 10) / 10;
+  candidate = await tryQuality(30);
+  if (candidate.length <= MAX_ANIMATED_STICKER_BYTES) return candidate;
 
-      console.log('🎥 Sticker medio calidad ' + quality + ': ' + sizeKb + ' KB');
+  candidate = await tryQuality(24);
+  if (candidate.length <= MAX_ANIMATED_STICKER_BYTES) return candidate;
 
-      if (!bestBuffer || candidate.length < bestBuffer.length) {
-        bestBuffer = candidate;
-        bestQuality = quality;
-      }
+  // Si aun así no entra, devolvemos la versión más pequeña encontrada
+  // en lugar de continuar procesando durante minutos.
+  return bestBuffer;
+}
 
-      if (candidate.length <= MAX_ANIMATED_STICKER_BYTES) {
-        console.log(
-          '✅ Sticker aceptado con compresión media: ' +
-          sizeKb + ' KB con calidad ' + quality
-        );
-        return candidate;
-      }
-    } catch (error) {
-      console.warn(
-        '⚠️ Falló compresión media calidad ' + quality + ': ' +
-        (error?.message || error)
-      );
+async function createStickerWork(message, sourceMessage, mediaType) {
+  const jid = message.key.remoteJid;
+
+  await sock.sendMessage(jid, {
+    react: { text: '⏳', key: message.key }
+  });
+
+  let buffer = await downloadMediaMessage(
+    sourceMessage,
+    'buffer',
+    {},
+    {
+      logger: P({ level: 'silent' }),
+      reuploadRequest: sock.updateMediaMessage
     }
+  );
+
+  if (mediaType === 'video') {
+    const videoMessage = unwrapMessage(sourceMessage)?.videoMessage || {};
+    const duration = Number(videoMessage.seconds || 10);
+
+    const stickerBuffer = await createFastVideoSticker(buffer, Math.min(duration, 10));
+
+    // Liberar la referencia al video original antes de enviar.
+    buffer = null;
+
+    await sock.sendMessage(jid, { sticker: stickerBuffer }, { quoted: message });
+  } else {
+    const sticker = new Sticker(buffer, {
+      pack: 'el mejor bot',
+      author: 'el mejor bot',
+      type: StickerTypes.DEFAULT,
+      quality: 90
+    });
+
+    const stickerBuffer = await sticker.toBuffer();
+
+    buffer = null;
+
+    await sock.sendMessage(jid, { sticker: stickerBuffer }, { quoted: message });
   }
 
-  // Último recurso: mantener el comportamiento pequeño que ya funcionaba,
-  // pero todavía buscando la mejor calidad posible de 3 en 3.
-  const fallback = await optimizeVideoFallback(buffer, duration);
-
-  for (const quality of getAdaptiveStickerQualities(30, 18)) {
-    try {
-      const candidate = await buildVideoSticker(fallback, quality);
-      const sizeKb = Math.round(candidate.length / 1024 * 10) / 10;
-
-      console.log('🆘 Sticker extremo calidad ' + quality + ': ' + sizeKb + ' KB');
-
-      if (!bestBuffer || candidate.length < bestBuffer.length) {
-        bestBuffer = candidate;
-        bestQuality = quality;
-      }
-
-      if (candidate.length <= MAX_ANIMATED_STICKER_BYTES) {
-        console.log(
-          '✅ Sticker aceptado con perfil extremo: ' +
-          sizeKb + ' KB con calidad ' + quality
-        );
-        return candidate;
-      }
-    } catch (error) {
-      console.warn(
-        '⚠️ Falló perfil extremo calidad ' + quality + ': ' +
-        (error?.message || error)
-      );
-    }
-  }
-
-  if (bestBuffer) {
-    console.warn(
-      '⚠️ No se logró bajar de ' +
-      Math.round(MAX_ANIMATED_STICKER_BYTES / 1024) +
-      ' KB. Se enviará la versión más pequeña disponible (calidad ' +
-      bestQuality + ').'
-    );
-    return bestBuffer;
-  }
-
-  throw new Error('No se pudo convertir el video en sticker.');
+  await sock.sendMessage(jid, {
+    react: { text: '✅', key: message.key }
+  });
 }
 
 async function createSticker(message, sourceMessage, mediaType) {
@@ -814,60 +778,27 @@ async function createSticker(message, sourceMessage, mediaType) {
   if (processing.has(id)) return;
   processing.add(id);
 
-  const jid = message.key.remoteJid;
+  const run = () => createStickerWork(message, sourceMessage, mediaType);
 
   try {
-    await sock.sendMessage(jid, {
-      react: { text: '⏳', key: message.key }
-    });
-
-    let buffer = await downloadMediaMessage(
-      sourceMessage,
-      'buffer',
-      {},
-      {
-        logger: P({ level: 'silent' }),
-        reuploadRequest: sock.updateMediaMessage
-      }
-    );
-
-    let stickerBuffer;
-
     if (mediaType === 'video') {
-      const videoMessage = unwrapMessage(sourceMessage)?.videoMessage || {};
-      const optimized = await optimizeHeavyVideo(buffer, videoMessage);
-      buffer = optimized.buffer;
-      stickerBuffer = await createAdaptiveVideoSticker(
-        buffer,
-        optimized.duration || Number(videoMessage.seconds || 10)
-      );
+      await enqueueVideoSticker(run);
     } else {
-      const sticker = new Sticker(buffer, {
-        pack: 'el mejor bot',
-        author: 'el mejor bot',
-        type: StickerTypes.DEFAULT,
-        quality: 90
-      });
-      stickerBuffer = await sticker.toBuffer();
+      await run();
     }
-
-    await sock.sendMessage(jid, { sticker: stickerBuffer }, { quoted: message });
-    await sock.sendMessage(jid, {
-      react: { text: '✅', key: message.key }
-    });
   } catch (error) {
     console.error('Error creando sticker:', error);
 
     let reason = error?.message || error?.toString?.() || 'Error desconocido';
     reason = reason
-      .replace(/\s+/g, ' ')
-      .replace(/^Error:\s*/i, '')
+      .replace(/\\s+/g, ' ')
+      .replace(/^Error:\\s*/i, '')
       .trim();
 
     if (reason.length > 220) reason = reason.slice(0, 217) + '...';
 
     await sendText(
-      jid,
+      message.key.remoteJid,
       '❌ No pude crear el sticker.\\n📌 Razón: ' + reason,
       message
     ).catch(() => {});
