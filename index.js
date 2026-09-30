@@ -201,14 +201,22 @@ async function uploadEncryptedSession() {
     return false;
   }
 
-  // Baileys puede actualizar "registered" después de abrir la conexión.
-  // Si WhatsApp ya está conectado, guardamos la sesión sin depender de ese campo.
+  // NUNCA sobrescribir el respaldo de GitHub con una vinculación incompleta.
+  // Esto evita que un deploy/reinicio durante el login destruya la última sesión válida.
+  let creds;
   try {
-    JSON.parse(await fs.promises.readFile(credsPath, 'utf8'));
+    creds = JSON.parse(await fs.promises.readFile(credsPath, 'utf8'));
   } catch {
     lastSessionUploadOk = false;
     lastSessionUploadError = 'creds.json inválido';
     console.warn('⚠️ Sesión NO guardada: creds.json no pudo validarse.');
+    return false;
+  }
+
+  if (creds?.registered !== true) {
+    lastSessionUploadOk = false;
+    lastSessionUploadError = 'La sesión todavía no está vinculada';
+    console.log('⏸️ Sesión no guardada: la vinculación de WhatsApp todavía no terminó.');
     return false;
   }
 
@@ -798,7 +806,13 @@ async function startSocket(restoreSession = true) {
   newSock.ev.on('creds.update', async () => {
     try {
       await authState.saveCreds();
-      scheduleSessionUpload();
+
+      // Las credenciales se guardan localmente en cada actualización,
+      // pero el respaldo remoto SOLO se actualiza cuando registered=true.
+      // Así un reinicio/deploy durante una vinculación nunca pisa una sesión válida.
+      if (authState?.state?.creds?.registered === true && connectionState === 'conectado') {
+        scheduleSessionUpload();
+      }
     } catch (error) {
       console.error('❌ Error guardando credenciales locales:', error.message);
     }
@@ -1170,7 +1184,14 @@ async function gracefulShutdown(signal) {
 
   try {
     if (authState?.saveCreds) await authState.saveCreds();
-    await uploadEncryptedSession();
+
+    // Al apagar Render, jamás subir una sesión de vinculación incompleta.
+    // Solo conservamos/reemplazamos el respaldo remoto si ya está registrada.
+    if (authState?.state?.creds?.registered === true) {
+      await uploadEncryptedSession();
+    } else {
+      console.log('⏸️ Apagado: no se sobrescribe la sesión de GitHub porque no está vinculada.');
+    }
   } catch (error) {
     console.error('❌ No se pudo guardar la sesión al apagar:', error.message);
   }
