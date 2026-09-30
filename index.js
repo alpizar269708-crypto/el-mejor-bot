@@ -163,6 +163,23 @@ async function uploadEncryptedSession() {
     return false;
   }
 
+  // No reemplazar una sesión válida de GitHub con credenciales
+  // que todavía no terminaron de vincularse.
+  try {
+    const localCreds = JSON.parse(await fs.promises.readFile(credsPath, 'utf8'));
+    if (localCreds?.registered !== true) {
+      lastSessionUploadOk = false;
+      lastSessionUploadError = 'Sesión local aún no vinculada';
+      console.log('⏸️ No se sobrescribe session.enc: la sesión local aún no está vinculada.');
+      return false;
+    }
+  } catch {
+    lastSessionUploadOk = false;
+    lastSessionUploadError = 'creds.json inválido';
+    console.warn('⚠️ Sesión NO guardada: creds.json no pudo validarse.');
+    return false;
+  }
+
   if (uploadRunning) {
     uploadAgain = true;
     return false;
@@ -1000,14 +1017,16 @@ app.listen(PORT, async () => {
     if (fs.existsSync(credsPath)) {
       const saved = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
 
-      if (saved?.registered) {
-        console.log('🔐 Sesión encontrada. Conectando WhatsApp...');
-        await startSocket(false);
-      } else {
-        console.log('Sin sesión local registrada. Esperando QR o código solicitado por el usuario.');
-      }
+      console.log(
+        '🔐 Credenciales restauradas. registered=' +
+        (saved?.registered === true ? 'true' : 'false') +
+        '. Iniciando WhatsApp...'
+      );
+      // Intentar levantar siempre las credenciales restauradas evita
+      // descartar una sesión recuperable por un campo registered temporal.
+      await startSocket(false);
     } else {
-      console.log('Sin sesión local registrada. Esperando QR o código solicitado por el usuario.');
+      console.log('Sin sesión local. Esperando QR o código solicitado por el usuario.');
     }
   } catch (error) {
     console.error('❌ Error restaurando sesión inicial:', error.message);
