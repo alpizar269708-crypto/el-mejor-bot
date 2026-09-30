@@ -500,20 +500,22 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
   // en sticker dentro de los límites de CPU/memoria de Render.
   const veryHeavy = sourceMegabytes >= 8 || sourceMaxDimension >= 720;
 
+  // Perfil ultrarrápido: prioriza que el sticker salga rápido.
+  // La conversión a sticker hará la compresión final después.
   const profile = veryHeavy
     ? {
-        duration: 10,
+        duration: 8,
+        fps: 6,
+        size: 180,
+        bitrate: '120k',
+        crf: 36
+      }
+    : {
+        duration: 8,
         fps: 8,
         size: 200,
         bitrate: '160k',
         crf: 34
-      }
-    : {
-        duration: 10,
-        fps: 10,
-        size: 240,
-        bitrate: '220k',
-        crf: 32
       };
 
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-'));
@@ -534,11 +536,11 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
           '-t ' + profile.duration,
           '-an',
           '-c:v libx264',
-          '-preset superfast',
+          '-preset ultrafast',
           '-crf ' + profile.crf,
           '-b:v ' + profile.bitrate,
           '-maxrate ' + profile.bitrate,
-          '-bufsize 900k',
+          '-bufsize 240k',
           '-pix_fmt yuv420p',
           '-threads 2',
           '-movflags +faststart'
