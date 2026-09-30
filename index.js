@@ -543,7 +543,8 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
         .videoFilters([
           'fps=' + profile.fps,
           'scale=' + profile.size + ':' + profile.size +
-            ':force_original_aspect_ratio=decrease:flags=fast_bilinear'
+            ':force_original_aspect_ratio=decrease:flags=fast_bilinear',
+          'pad=ceil(iw/2)*2:ceil(ih/2)*2'
         ])
         .outputOptions([
           '-t ' + profile.duration,
@@ -590,7 +591,8 @@ async function optimizeVideoFallback(buffer, duration = 10) {
       ffmpeg(input)
         .videoFilters([
           'fps=10',
-          'scale=180:180:force_original_aspect_ratio=decrease:flags=fast_bilinear'
+          'scale=180:180:force_original_aspect_ratio=decrease:flags=fast_bilinear',
+          'pad=ceil(iw/2)*2:ceil(ih/2)*2'
         ])
         .outputOptions([
           '-t ' + Math.min(Math.max(Number(duration) || 10, 0.1), 10),
