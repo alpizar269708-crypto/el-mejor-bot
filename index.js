@@ -497,13 +497,27 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
     return { buffer, optimized: false };
   }
 
-  // Un solo perfil principal: menos trabajo y calidad más consistente.
-  const profile = {
-    duration: 10,
-    fps: 12,
-    size: 320,
-    bitrate: '450k'
-  };
+  // Perfil adaptativo: los videos muy pesados necesitan un transcode
+  // más agresivo para que WhatsApp pueda convertirlos en sticker sin fallar.
+  const sourceMegabytes = buffer.length / 1024 / 1024;
+  const sourceMaxDimension = Math.max(width, height);
+  const veryHeavy = sourceMegabytes >= 15 || sourceMaxDimension >= 1080;
+
+  const profile = veryHeavy
+    ? {
+        duration: 10,
+        fps: 10,
+        size: 280,
+        bitrate: '260k',
+        crf: 30
+      }
+    : {
+        duration: 10,
+        fps: 12,
+        size: 320,
+        bitrate: '380k',
+        crf: 27
+      };
 
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-'));
   const input = path.join(tempDir, 'input');
@@ -524,11 +538,12 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
           '-an',
           '-c:v libx264',
           '-preset superfast',
-          '-crf 25',
+          '-crf ' + profile.crf,
           '-b:v ' + profile.bitrate,
           '-maxrate ' + profile.bitrate,
           '-bufsize 900k',
           '-pix_fmt yuv420p',
+          '-threads 2',
           '-movflags +faststart'
         ])
         .on('end', resolve)
@@ -543,7 +558,7 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
       Math.round(buffer.length / 1024 / 1024 * 100) / 100 + ' MB →',
       Math.round(optimized.length / 1024 * 100) / 100 + ' KB',
       '(' + profile.size + 'px, ' + profile.fps + ' fps, ' +
-      profile.duration + 's)'
+      profile.duration + 's, ' + (veryHeavy ? 'perfil pesado' : 'perfil normal') + ')'
     );
 
     return { buffer: optimized, optimized: true };
