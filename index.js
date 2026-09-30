@@ -594,17 +594,17 @@ async function optimizeHeavyVideo(buffer, videoMessage = {}) {
   const profile = veryHeavy
     ? {
         duration: actualDuration,
-        fps: 8,
-        size: 200,
-        bitrate: '115k',
-        crf: 36
+        fps: 10,
+        size: 210,
+        bitrate: '125k',
+        crf: 35
       }
     : {
         duration: actualDuration,
-        fps: 12,
-        size: 220,
-        bitrate: '135k',
-        crf: 34
+        fps: 10,
+        size: 210,
+        bitrate: '125k',
+        crf: 35
       };
 
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-'));
@@ -666,8 +666,8 @@ async function optimizeVideoFallback(buffer, duration = 10) {
     await new Promise((resolve, reject) => {
       ffmpeg(input)
         .videoFilters([
-          'fps=12',
-          'scale=220:220:force_original_aspect_ratio=decrease:flags=fast_bilinear',
+          'fps=10',
+          'scale=210:210:force_original_aspect_ratio=decrease:flags=fast_bilinear',
           'pad=ceil(iw/2)*2:ceil(ih/2)*2'
         ])
         .outputOptions([
@@ -675,9 +675,9 @@ async function optimizeVideoFallback(buffer, duration = 10) {
           '-an',
           '-c:v libx264',
           '-preset ultrafast',
-          '-crf 32',
-          '-b:v 160k',
-          '-maxrate 160k',
+          '-crf 35',
+          '-b:v 125k',
+          '-maxrate 125k',
           '-bufsize 240k',
           '-pix_fmt yuv420p',
           '-threads 2',
