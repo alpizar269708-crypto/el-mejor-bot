@@ -877,13 +877,13 @@ async function createAnimatedWebpSticker(buffer, duration = 10) {
     await new Promise((resolve, reject) => {
       ffmpeg(input)
         .videoFilters([
-          'fps=8',
+          'fps=12',
           'scale=320:320:force_original_aspect_ratio=decrease:flags=fast_bilinear',
           'pad=ceil(iw/2)*2:ceil(ih/2)*2'
         ])
         .outputOptions([
           '-t ' + actualDuration, '-an', '-c:v libwebp_anim',
-          '-lossless 0', '-q:v 58', '-compression_level 4',
+          '-lossless 0', '-q:v 55', '-compression_level 4',
           '-loop 0', '-preset picture', '-threads 1'
         ])
         .on('end', resolve).on('error', reject).save(output);
@@ -927,13 +927,13 @@ async function createFastVideoSticker(buffer, duration) {
     await new Promise((resolve, reject) => {
       ffmpeg(input)
         .videoFilters([
-          'fps=7',
-          'scale=260:260:force_original_aspect_ratio=decrease:flags=fast_bilinear',
+          'fps=12',
+          'scale=280:280:force_original_aspect_ratio=decrease:flags=fast_bilinear',
           'pad=ceil(iw/2)*2:ceil(ih/2)*2'
         ])
         .outputOptions([
           '-t ' + Math.min(Math.max(Number(duration) || 10, 0.1), 10),
-          '-an', '-c:v libwebp_anim', '-lossless 0', '-q:v 48',
+          '-an', '-c:v libwebp_anim', '-lossless 0', '-q:v 46',
           '-compression_level 4', '-loop 0', '-preset picture', '-threads 1'
         ])
         .on('end', resolve).on('error', reject).save(output);
