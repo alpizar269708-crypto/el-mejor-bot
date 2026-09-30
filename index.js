@@ -891,9 +891,14 @@ async function startSocket(restoreSession = true) {
   newSock.ev.on('messages.upsert', async update => {
     for (const message of update?.messages || []) {
       try {
-        await handleMessage({ messages: [message] });
+        // No bloquear la recepción de mensajes mientras FFmpeg/Sticker Formatter
+        // procesa un sticker. Así el bot puede seguir contestando y recibiendo
+        // mensajes aunque un video tarde en convertirse.
+        handleMessage({ messages: [message] }).catch(error => {
+          console.error('Error procesando mensaje:', error);
+        });
       } catch (error) {
-        console.error('Error procesando mensaje:', error);
+        console.error('Error iniciando procesamiento del mensaje:', error);
       }
     }
   });
@@ -937,12 +942,9 @@ async function startSocket(restoreSession = true) {
       console.log('🟢 WhatsApp conectado:', lastConnectedAt);
 
       clearTimeout(uploadTimer);
-      uploadEncryptedSession().then(ok => {
-        if (!ok) scheduleSessionUpload(5000);
-      }).catch(error => {
-        console.error('Guardado inmediato:', error.message);
-        scheduleSessionUpload(5000);
-      });
+      // No competir con FFmpeg justo al conectar. El respaldo de sesión sigue
+      // haciéndose automáticamente, pero unos segundos después.
+      scheduleSessionUpload(10000);
       return;
     }
 
