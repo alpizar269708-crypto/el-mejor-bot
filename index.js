@@ -810,8 +810,11 @@ async function startSocket(restoreSession = true) {
       // Las credenciales se guardan localmente en cada actualización,
       // pero el respaldo remoto SOLO se actualiza cuando registered=true.
       // Así un reinicio/deploy durante una vinculación nunca pisa una sesión válida.
-      if (authState?.state?.creds?.registered === true && connectionState === 'conectado') {
-        scheduleSessionUpload();
+      if (authState?.state?.creds?.registered === true) {
+        // No dependemos de que el socket siga marcado como conectado.
+        // Render puede enviar SIGTERM durante una transición y la sesión
+        // ya registrada debe respaldarse de todos modos.
+        scheduleSessionUpload(1500);
       }
     } catch (error) {
       console.error('❌ Error guardando credenciales locales:', error.message);
@@ -905,8 +908,10 @@ async function startSocket(restoreSession = true) {
           fs.rmSync(SESSION_DIR, { recursive: true, force: true });
         } catch {}
         fs.mkdirSync(SESSION_DIR, { recursive: true });
-        // Evitar que Render restaure otra vez una sesión que WhatsApp marcó como cerrada.
-        await deleteEncryptedSession();
+        // NO borrar automáticamente el respaldo remoto. Si Render reinicia
+        // mientras WhatsApp está cerrando la conexión, el respaldo válido debe
+        // seguir disponible para el siguiente arranque. Una nueva vinculación
+        // lo reemplazará únicamente cuando quede registrada.
         return;
       }
 
@@ -940,8 +945,9 @@ async function startSocket(restoreSession = true) {
           } catch {}
           fs.mkdirSync(SESSION_DIR, { recursive: true });
 
-          await deleteEncryptedSession();
-
+          // No borrar el respaldo remoto aquí. Una falla temporal o una
+          // transición de WhatsApp no debe destruir la última sesión válida.
+          // /iniciar podrá reemplazarlo después de una nueva vinculación.
           pairingNumber = null;
           pairingCode = null;
           pairingRequested = false;
@@ -1050,6 +1056,7 @@ app.get('/health', async (_req, res) => {
   res.status(200).json({
     ok: true,
     estado: connectionState,
+    ramaSesion: SESSION_BRANCH,
     whatsapp: connectionState === 'conectado',
     uptime: Math.round(process.uptime()),
     sessionLocal: fs.existsSync(path.join(SESSION_DIR, 'creds.json')),
@@ -1239,7 +1246,9 @@ app.listen(PORT, async () => {
           fs.rmSync(SESSION_DIR, { recursive: true, force: true });
         } catch {}
         fs.mkdirSync(SESSION_DIR, { recursive: true });
-        await deleteEncryptedSession();
+        // El respaldo remoto NO se elimina automáticamente. Si existe, se
+        // conserva para poder recuperarlo tras un reinicio. Una nueva sesión
+        // válida lo reemplazará mediante uploadEncryptedSession().
         connectionState = 'desconectado';
         pairingError = 'La sesión anterior estaba incompleta. Genera un nuevo código de vinculación.';
       }
