@@ -1145,14 +1145,14 @@ app.get('/', async (_req, res) => {
   }
 
   const qr = qrDataUrl
-    ? '<img src="' + qrDataUrl + '" alt="QR" style="width:280px;height:280px">'
-    : '<p>No hay QR disponible.</p>';
+    ? '<img id="qrImage" src="' + qrDataUrl + '" alt="QR" style="width:280px;height:280px">'
+    : '<p id="qrEmpty">No hay QR disponible.</p>';
 
-  const code = pairingCode
-    ? '<div style="font-size:30px;font-weight:bold;letter-spacing:5px;margin:20px">' + pairingCode + '</div><p>En WhatsApp: Dispositivos vinculados → Vincular dispositivo → Vincular con número de teléfono.</p>'
+  const codeHtml = pairingCode
+    ? '<div id="pairingCodeValue" style="font-size:30px;font-weight:bold;letter-spacing:5px;margin:20px">' + pairingCode + '</div><p id="pairingHelp">En WhatsApp: Dispositivos vinculados → Vincular dispositivo → Vincular con número de teléfono.</p>'
     : pairingError
-      ? '<p style="color:#b91c1c">❌ ' + pairingError + '</p>'
-      : '<p>Escribe tu número y pulsa Generar código.</p>';
+      ? '<p id="pairingCodeValue" style="color:#b91c1c">❌ ' + pairingError + '</p>'
+      : '<p id="pairingCodeValue">Escribe tu número y pulsa Generar código.</p>';
 
   res.send(`<!doctype html>
 <html lang="es">
@@ -1163,30 +1163,57 @@ app.get('/', async (_req, res) => {
 <style>
 body{font-family:Arial,sans-serif;max-width:620px;margin:30px auto;padding:20px;text-align:center}
 .card{border:1px solid #ddd;border-radius:14px;padding:20px;margin:15px 0}
-input{padding:12px;width:90%;max-width:320px;margin:6px}
+input{padding:12px;width:90%;max-width:320px;margin:6px;font-size:16px}
 button{padding:12px 18px;border:0;border-radius:8px;cursor:pointer}
 </style>
 </head>
 <body>
 <h1>🤖 el mejor bot</h1>
-<p>Estado: <b>${connectionState}</b></p>
-<script>
-setTimeout(() => location.reload(), 3000);
-</script>
-<div class="card"><h2>QR</h2>${qr}</div>
+<p>Estado: <b id="connectionState">${connectionState}</b></p>
+
+<div class="card"><h2>QR</h2><div id="qrContainer">${qr}</div></div>
+
 <div class="card">
 <h2>Código de 8 dígitos</h2>
 <form method="POST" action="/iniciar">
-<input name="numero" placeholder="521XXXXXXXXXX" required>
+<input id="numero" name="numero" placeholder="521XXXXXXXXXX" required autocomplete="tel" inputmode="numeric">
 <br><button type="submit">Generar código</button>
 </form>
-${code}
+<div id="pairingContainer">${codeHtml}</div>
 </div>
+
 <div class="card">
 <form method="POST" action="/cerrar-sesion">
 <button type="submit">Cerrar sesión</button>
 </form>
 </div>
+
+<script>
+async function actualizarEstado() {
+  try {
+    const response = await fetch('/estado-vinculacion', { cache: 'no-store' });
+    if (!response.ok) return;
+    const data = await response.json();
+
+    document.getElementById('connectionState').textContent = data.estado || 'desconectado';
+
+    const pairingContainer = document.getElementById('pairingContainer');
+
+    if (data.pairingCode) {
+      pairingContainer.innerHTML =
+        '<div style="font-size:30px;font-weight:bold;letter-spacing:5px;margin:20px">' +
+        data.pairingCode +
+        '</div><p>En WhatsApp: Dispositivos vinculados → Vincular dispositivo → Vincular con número de teléfono.</p>';
+    } else if (data.pairingError) {
+      pairingContainer.innerHTML =
+        '<p style="color:#b91c1c">❌ ' + data.pairingError + '</p>';
+    }
+  } catch {}
+}
+
+setInterval(actualizarEstado, 2000);
+actualizarEstado();
+</script>
 </body>
 </html>`);
 });
@@ -1251,7 +1278,9 @@ app.get('/estado-vinculacion', (_req, res) => {
   res.json({
     conectado: connectionState === 'conectado',
     estado: connectionState,
-    pairingCode
+    pairingCode,
+    pairingError,
+    qrDataUrl
   });
 });
 
