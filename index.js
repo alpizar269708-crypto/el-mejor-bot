@@ -867,80 +867,30 @@ async function requestPairingCodeIfNeeded() {
   }
 }
 
-async function optimizeHeavyVideo(buffer, videoMessage = {}) {
-  const duration = Number(videoMessage.seconds || 0);
-  const width = Number(videoMessage.width || 0);
-  const height = Number(videoMessage.height || 0);
-
-  const actualDuration = duration > 0 ? Math.min(duration, 10) : 10;
-
-  console.log(
-    '🎥 Video recibido:',
-    width + 'x' + height + ', ' +
-    actualDuration + 's, ' +
-    Math.round(buffer.length / 1024 / 1024 * 100) / 100 + ' MB'
-  );
-
-  return {
-    buffer,
-    duration: actualDuration,
-    optimized: false
-  };
-}
-
-async function transcodeVideoForSticker(buffer, duration = 10, profile = {}) {
+async function createAnimatedWebpSticker(buffer, duration = 10) {
   const actualDuration = Math.min(Math.max(Number(duration) || 10, 0.1), 10);
-  const fps = profile.fps || 10;
-  const size = profile.size || 420;
-  const crf = profile.crf ?? 31;
-  const bitrate = profile.bitrate || '130k';
-  const bufsize = profile.bufsize || '260k';
-
-  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-video-'));
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-sticker-'));
   const input = path.join(tempDir, 'input');
-  const output = path.join(tempDir, 'optimized.mp4');
-
+  const output = path.join(tempDir, 'sticker.webp');
   try {
     await fs.promises.writeFile(input, buffer);
-
     await new Promise((resolve, reject) => {
       ffmpeg(input)
         .videoFilters([
-          'fps=' + fps,
-          'scale=' + size + ':' + size +
-            ':force_original_aspect_ratio=decrease:flags=fast_bilinear',
+          'fps=8',
+          'scale=320:320:force_original_aspect_ratio=decrease:flags=fast_bilinear',
           'pad=ceil(iw/2)*2:ceil(ih/2)*2'
         ])
         .outputOptions([
-          '-t ' + actualDuration,
-          '-an',
-          '-c:v libx264',
-          '-preset ultrafast',
-          '-crf ' + crf,
-          '-b:v ' + bitrate,
-          '-maxrate ' + bitrate,
-          '-bufsize ' + bufsize,
-          '-pix_fmt yuv420p',
-          '-threads 2',
-          '-filter_threads 1',
-          '-filter_complex_threads 1',
-          '-movflags +faststart'
+          '-t ' + actualDuration, '-an', '-c:v libwebp_anim',
+          '-lossless 0', '-q:v 58', '-compression_level 4',
+          '-loop 0', '-preset picture', '-threads 1'
         ])
-        .on('end', resolve)
-        .on('error', reject)
-        .save(output);
+        .on('end', resolve).on('error', reject).save(output);
     });
-
-    const optimized = await fs.promises.readFile(output);
-
-    console.log(
-      '🎬 Precompresión:',
-      Math.round(buffer.length / 1024 / 1024 * 100) / 100 + ' MB →',
-      Math.round(optimized.length / 1024 * 100) / 100 + ' KB',
-      '(' + size + 'px, ' + fps + ' fps, CRF ' + crf + ', ' + bitrate + ')'
-    );
-
-    return optimized;
+    const result = await fs.promises.readFile(output);
+    console.log('🎥 WebP directo: ' + Math.round(result.length / 1024 * 10) / 10 + ' KB');
+    return result;
   } finally {
     await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -949,100 +899,52 @@ async function transcodeVideoForSticker(buffer, duration = 10, profile = {}) {
 const MAX_ANIMATED_STICKER_BYTES = 450 * 1024;
 const videoQueue = [];
 let videoQueueRunning = false;
-
 function enqueueVideoSticker(task) {
   return new Promise((resolve, reject) => {
     videoQueue.push({ task, resolve, reject });
     drainVideoQueue();
   });
 }
-
 async function drainVideoQueue() {
   if (videoQueueRunning) return;
   videoQueueRunning = true;
-
   try {
     while (videoQueue.length) {
       const job = videoQueue.shift();
-
-      try {
-        job.resolve(await job.task());
-      } catch (error) {
-        job.reject(error);
-      }
+      try { job.resolve(await job.task()); } catch (error) { job.reject(error); }
     }
-  } finally {
-    videoQueueRunning = false;
-  }
+  } finally { videoQueueRunning = false; }
 }
-
-async function buildVideoSticker(buffer, quality) {
-  const sticker = new Sticker(buffer, {
-    pack: 'el mejor bot',
-    author: 'el mejor bot',
-    type: StickerTypes.FULL,
-    quality
-  });
-
-  return sticker.toBuffer();
-}
-
 async function createFastVideoSticker(buffer, duration) {
-  let workingBuffer = buffer;
-  let bestBuffer = null;
+  let result = await createAnimatedWebpSticker(buffer, duration);
+  if (result.length <= MAX_ANIMATED_STICKER_BYTES) return result;
 
-  const tryQuality = async quality => {
-    const candidate = await buildVideoSticker(workingBuffer, quality);
-    const sizeKb = Math.round(candidate.length / 1024 * 10) / 10;
-
-    console.log('🎥 Sticker calidad ' + quality + ': ' + sizeKb + ' KB');
-
-    if (!bestBuffer || candidate.length < bestBuffer.length) {
-      bestBuffer = candidate;
-    }
-
-    return candidate;
-  };
-
-  // Una sola precompresión de buena calidad para HD.
-  workingBuffer = await transcodeVideoForSticker(buffer, duration, {
-    fps: 10,
-    size: 420,
-    bitrate: '130k',
-    bufsize: '260k',
-    crf: 31
-  });
-
-  // Ya no necesitamos conservar el HD original en RAM.
-  buffer = null;
-
-  let candidate = await tryQuality(45);
-  if (candidate.length <= MAX_ANIMATED_STICKER_BYTES) return candidate;
-
-  candidate = await tryQuality(30);
-  if (candidate.length <= MAX_ANIMATED_STICKER_BYTES) return candidate;
-
-  // Segundo y último transcode: reduce resolución y bitrate sin irse
-  // directamente a una calidad extrema.
-  workingBuffer = await transcodeVideoForSticker(workingBuffer, duration, {
-    fps: 8,
-    size: 300,
-    bitrate: '95k',
-    bufsize: '190k',
-    crf: 35
-  });
-
-  candidate = await tryQuality(30);
-  if (candidate.length <= MAX_ANIMATED_STICKER_BYTES) return candidate;
-
-  candidate = await tryQuality(24);
-  if (candidate.length <= MAX_ANIMATED_STICKER_BYTES) return candidate;
-
-  // Si aun así no entra, devolvemos la versión más pequeña encontrada
-  // en lugar de continuar procesando durante minutos.
-  return bestBuffer;
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-sticker-retry-'));
+  const input = path.join(tempDir, 'input');
+  const output = path.join(tempDir, 'sticker.webp');
+  try {
+    await fs.promises.writeFile(input, buffer);
+    await new Promise((resolve, reject) => {
+      ffmpeg(input)
+        .videoFilters([
+          'fps=7',
+          'scale=260:260:force_original_aspect_ratio=decrease:flags=fast_bilinear',
+          'pad=ceil(iw/2)*2:ceil(ih/2)*2'
+        ])
+        .outputOptions([
+          '-t ' + Math.min(Math.max(Number(duration) || 10, 0.1), 10),
+          '-an', '-c:v libwebp_anim', '-lossless 0', '-q:v 48',
+          '-compression_level 4', '-loop 0', '-preset picture', '-threads 1'
+        ])
+        .on('end', resolve).on('error', reject).save(output);
+    });
+    result = await fs.promises.readFile(output);
+    console.log('🎥 WebP segundo intento: ' + Math.round(result.length / 1024 * 10) / 10 + ' KB');
+  } finally {
+    await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+  return result;
 }
-
 async function createStickerWork(message, sourceMessage, mediaType) {
   const jid = message.key.remoteJid;
 
