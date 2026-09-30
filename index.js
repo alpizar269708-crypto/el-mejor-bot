@@ -194,12 +194,80 @@ async function uploadEncryptedSession() {
   }
 }
 
-function scheduleSessionUpload() {
-  if (!sessionSecurityReady()) return;
+function scheduleSessionUpload(delay = 15000) {
+  if (!sessionSecurityReady() || shuttingDown) return;
   clearTimeout(uploadTimer);
-  uploadTimer = setTimeout(() => uploadEncryptedSession(), 15000);
+  uploadTimer = setTimeout(() => {
+    uploadEncryptedSession().catch(error => {
+      console.error('Error en guardado programado:', error.message);
+    });
+  }, delay);
 }
 
+function getDisconnectCode(lastDisconnect) {
+  return (
+    lastDisconnect?.error?.output?.statusCode ||
+    lastDisconnect?.error?.statusCode ||
+    lastDisconnect?.error?.data?.statusCode ||
+    null
+  );
+}
+
+function getDisconnectReason(lastDisconnect) {
+  const error = lastDisconnect?.error;
+  if (!error) return 'sin detalle';
+  return error?.message || error?.data?.message || String(error);
+}
+
+function scheduleReconnect(statusCode) {
+  if (shuttingDown) return;
+
+  clearTimeout(reconnectTimer);
+  reconnectAttempts += 1;
+
+  const baseDelay =
+    statusCode === DisconnectReason.restartRequired ? 1000 :
+    statusCode === 408 ? 3000 :
+    statusCode === 428 ? 3000 :
+    statusCode === 440 ? 5000 :
+    5000;
+
+  const delay = Math.min(
+    baseDelay * Math.pow(2, Math.max(0, reconnectAttempts - 1)),
+    60000
+  );
+
+  console.log(
+    '🔄 Reconexión #' + reconnectAttempts +
+    ' en ' + Math.round(delay / 1000) + 's. Código: ' +
+    (statusCode ?? 'desconocido')
+  );
+
+  reconnectTimer = setTimeout(() => {
+    startSocket(false).catch(error => {
+      console.error('❌ Error levantando reconexión:', error.message);
+      scheduleReconnect(statusCode);
+    });
+  }, delay);
+}
+
+async function startSocketAfterWake() {
+  if (shuttingDown) return;
+  if (connectionState === 'conectado' || connectionState === 'conectando') return;
+
+  const credsPath = path.join(SESSION_DIR, 'creds.json');
+
+  if (!fs.existsSync(credsPath) && sessionSecurityReady()) {
+    await downloadEncryptedSession();
+  }
+
+  if (fs.existsSync(credsPath)) {
+    const saved = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
+    if (saved?.registered) {
+      await startSocket(false);
+    }
+  }
+}
 
 const PORT = process.env.PORT || 3000;
 const SESSION_DIR = path.join(__dirname, 'session');
@@ -221,6 +289,13 @@ let lastQrAt = 0;
 let loginRefreshPromise = null;
 let connectionState = 'desconectado';
 let reconnectTimer = null;
+let reconnectAttempts = 0;
+let lastConnectedAt = null;
+let lastDisconnectAt = null;
+let lastDisconnectCode = null;
+let lastDisconnectReason = null;
+let socketGeneration = 0;
+let shuttingDown = false;
 const processing = new Set();
 
 function getText(message) {
@@ -462,14 +537,20 @@ async function restartForFreshLogin() {
   return loginRefreshPromise;
 }
 
-async function startSocket(restoreSession = true) {
-  if (sock && connectionState !== 'desconectado') return sock;
 
-  if (restoreSession && sessionSecurityReady()) await downloadEncryptedSession();
+async function startSocket(restoreSession = true) {
+  if (shuttingDown) return null;
+  if (sock && (connectionState === 'conectado' || connectionState === 'conectando')) return sock;
+
+  if (restoreSession && sessionSecurityReady()) {
+    await downloadEncryptedSession();
+  }
+
   authState = await useMultiFileAuthState(SESSION_DIR);
   connectionState = 'conectando';
+  const myGeneration = ++socketGeneration;
 
-  sock = makeWASocket({
+  const newSock = makeWASocket({
     auth: authState.state,
     logger: P({ level: 'silent' }),
     browser: Browsers.macOS('Chrome'),
@@ -480,11 +561,18 @@ async function startSocket(restoreSession = true) {
     markOnlineOnConnect: false
   });
 
-  sock.ev.on('creds.update', async () => {
-    await authState.saveCreds();
-    scheduleSessionUpload();
+  sock = newSock;
+
+  newSock.ev.on('creds.update', async () => {
+    try {
+      await authState.saveCreds();
+      scheduleSessionUpload();
+    } catch (error) {
+      console.error('❌ Error guardando credenciales locales:', error.message);
+    }
   });
-  sock.ev.on('messages.upsert', async update => {
+
+  newSock.ev.on('messages.upsert', async update => {
     for (const message of update?.messages || []) {
       try {
         await handleMessage({ messages: [message] });
@@ -494,7 +582,9 @@ async function startSocket(restoreSession = true) {
     }
   });
 
-  sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
+  newSock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
+    if (myGeneration !== socketGeneration) return;
+
     if (qr) {
       if (pairingNumber) {
         qrDataUrl = null;
@@ -516,31 +606,52 @@ async function startSocket(restoreSession = true) {
 
     if (connection === 'open') {
       connectionState = 'conectado';
+      reconnectAttempts = 0;
+      lastConnectedAt = new Date().toISOString();
+      lastDisconnectCode = null;
+      lastDisconnectReason = null;
       qrDataUrl = null;
       pairingCode = null;
       pairingNumber = null;
       pairingRequested = false;
       pairingError = null;
-      console.log('el mejor bot conectado');
-      // Guardar INMEDIATAMENTE al terminar la vinculación.
+
+      console.log('✅ el mejor bot conectado');
+      console.log('🟢 WhatsApp conectado:', lastConnectedAt);
+
       clearTimeout(uploadTimer);
-      uploadEncryptedSession().catch(error => console.error('Guardado inmediato:', error));
+      uploadEncryptedSession().catch(error => {
+        console.error('Guardado inmediato:', error.message);
+        scheduleSessionUpload(5000);
+      });
+      return;
     }
 
     if (connection === 'close') {
-      connectionState = 'desconectado';
-      sock = null;
-      authState = null;
+      const statusCode = getDisconnectCode(lastDisconnect);
+      const reason = getDisconnectReason(lastDisconnect);
 
-      const statusCode =
-        lastDisconnect?.error?.output?.statusCode ||
-        lastDisconnect?.error?.statusCode;
+      connectionState = 'desconectado';
+      lastDisconnectAt = new Date().toISOString();
+      lastDisconnectCode = statusCode;
+      lastDisconnectReason = reason;
+
+      console.error('🔴 WhatsApp desconectado');
+      console.error('   Código:', statusCode ?? 'desconocido');
+      console.error('   Motivo:', reason);
+
+      if (sock === newSock) {
+        sock = null;
+        authState = null;
+      }
 
       if (statusCode === DisconnectReason.loggedOut) {
+        console.error('🚪 WhatsApp indicó LOGGED OUT. No se reconectará automáticamente.');
         qrDataUrl = null;
         pairingCode = null;
         pairingNumber = null;
         pairingRequested = false;
+
         try {
           fs.rmSync(SESSION_DIR, { recursive: true, force: true });
         } catch {}
@@ -552,14 +663,11 @@ async function startSocket(restoreSession = true) {
         pairingRequested = false;
       }
 
-      clearTimeout(reconnectTimer);
-      reconnectTimer = setTimeout(() => {
-        startSocket(false).catch(error => console.error('Reconexión:', error));
-      }, statusCode === DisconnectReason.restartRequired ? 0 : 1000);
+      scheduleReconnect(statusCode);
     }
   });
 
-  return sock;
+  return newSock;
 }
 
 app.get('/', async (_req, res) => {
@@ -618,8 +726,32 @@ ${code}
 </html>`);
 });
 
-app.get('/keepalive', (_req, res) => {
-  res.status(200).send('ok');
+app.get('/keepalive', async (_req, res) => {
+  try {
+    await startSocketAfterWake();
+    res.status(200).json({
+      ok: true,
+      estado: connectionState,
+      whatsapp: connectionState === 'conectado'
+    });
+  } catch (error) {
+    console.error('❌ Keepalive no pudo revisar WhatsApp:', error.message);
+    res.status(503).json({ ok: false, estado: connectionState });
+  }
+});
+
+app.get('/health', (_req, res) => {
+  res.status(200).json({
+    ok: true,
+    estado: connectionState,
+    whatsapp: connectionState === 'conectado',
+    uptime: Math.round(process.uptime()),
+    sessionLocal: fs.existsSync(path.join(SESSION_DIR, 'creds.json')),
+    ultimaConexion: lastConnectedAt,
+    ultimaDesconexion: lastDisconnectAt,
+    ultimoCodigoDesconexion: lastDisconnectCode,
+    intentosReconectar: reconnectAttempts
+  });
 });
 
 app.get('/estado-vinculacion', (_req, res) => {
@@ -658,6 +790,10 @@ app.post('/iniciar', async (req, res) => {
 });
 
 app.post('/cerrar-sesion', async (_req, res) => {
+  shuttingDown = true;
+  clearTimeout(reconnectTimer);
+  clearTimeout(uploadTimer);
+
   try {
     if (sock) {
       try { await sock.logout(); } catch {}
@@ -672,19 +808,23 @@ app.post('/cerrar-sesion', async (_req, res) => {
     pairingError = null;
     lastQrAt = 0;
     connectionState = 'desconectado';
+    shuttingDown = false;
 
     try {
       fs.rmSync(SESSION_DIR, { recursive: true, force: true });
     } catch {}
 
     fs.mkdirSync(SESSION_DIR, { recursive: true });
-    if (sessionSecurityReady()) scheduleSessionUpload();
   }
 
   res.redirect('/');
 });
 
 app.get('/limpiar-whatsapp', async (_req, res) => {
+  shuttingDown = true;
+  clearTimeout(reconnectTimer);
+  clearTimeout(uploadTimer);
+
   try {
     if (sock) {
       try { await sock.logout(); } catch {}
@@ -698,6 +838,7 @@ app.get('/limpiar-whatsapp', async (_req, res) => {
     pairingRequested = false;
     pairingError = null;
     connectionState = 'desconectado';
+    shuttingDown = false;
 
     try {
       fs.rmSync(SESSION_DIR, { recursive: true, force: true });
@@ -709,14 +850,56 @@ app.get('/limpiar-whatsapp', async (_req, res) => {
   res.json({ ok: true, mensaje: 'Sesión limpiada.' });
 });
 
+process.on('unhandledRejection', error => {
+  console.error('❌ UNHANDLED REJECTION:', error);
+});
+
+process.on('uncaughtException', error => {
+  console.error('❌ UNCAUGHT EXCEPTION:', error);
+  console.error('El proceso se cerrará para que Render lo reinicie limpiamente.');
+  process.exit(1);
+});
+
+async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  clearTimeout(reconnectTimer);
+  clearTimeout(uploadTimer);
+
+  console.log('🛑 Señal de apagado:', signal);
+
+  try {
+    if (authState?.saveCreds) await authState.saveCreds();
+    await uploadEncryptedSession();
+  } catch (error) {
+    console.error('❌ No se pudo guardar la sesión al apagar:', error.message);
+  }
+
+  try {
+    if (sock?.ws) sock.ws.close();
+  } catch {}
+
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
 app.listen(PORT, async () => {
   console.log('el mejor bot en puerto ' + PORT);
+
   try {
-    if (sessionSecurityReady()) await downloadEncryptedSession();
+    if (sessionSecurityReady()) {
+      await downloadEncryptedSession();
+    }
+
     const credsPath = path.join(SESSION_DIR, 'creds.json');
+
     if (fs.existsSync(credsPath)) {
       const saved = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
+
       if (saved?.registered) {
+        console.log('🔐 Sesión encontrada. Conectando WhatsApp...');
         await startSocket(false);
       } else {
         console.log('Sin sesión vinculada. Esperando QR o código solicitado por el usuario.');
@@ -725,6 +908,7 @@ app.listen(PORT, async () => {
       console.log('Sin sesión vinculada. Esperando QR o código solicitado por el usuario.');
     }
   } catch (error) {
-    console.error('Error restaurando sesión inicial:', error.message);
+    console.error('❌ Error restaurando sesión inicial:', error.message);
+    scheduleReconnect(null);
   }
 });
