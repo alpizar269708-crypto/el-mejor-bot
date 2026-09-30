@@ -33,6 +33,34 @@ const SESSION_PASSWORD = process.env.SESSION_PASSWORD;
 const ENCRYPTED_SESSION_FILE = 'session.enc';
 const LAST_GOOD_SESSION_FILE = 'session.last-good.enc';
 
+// Memoria persistente del bot.
+// Se mantiene en RAM para máxima velocidad y se sincroniza en segundo plano
+// con una rama independiente de GitHub para no competir con la sesión de WhatsApp.
+const MEMORY_BRANCH = process.env.MEMORY_BRANCH || 'memory-data';
+const ENCRYPTED_MEMORY_FILE = 'memory.enc';
+const LAST_GOOD_MEMORY_FILE = 'memory.last-good.enc';
+
+let memoryStore = {
+  version: 1,
+  updatedAt: null,
+  stats: {
+    totalMessages: 0,
+    totalStickers: 0,
+    totalVideoStickers: 0,
+    totalImageStickers: 0
+  },
+  chats: {}
+};
+
+let memoryLoaded = false;
+let memoryDirty = false;
+let memorySaveTimer = null;
+let memorySaveRunning = false;
+let memorySaveAgain = false;
+let lastMemorySaveAt = null;
+let lastMemorySaveOk = null;
+let lastMemorySaveError = null;
+
 function sessionSecurityReady() {
   return Boolean(GITHUB_TOKEN && SESSION_PASSWORD);
 }
@@ -81,6 +109,292 @@ async function githubRequest(url, options = {}) {
       ...(options.headers || {})
     }
   });
+}
+
+function memorySecurityReady() {
+  return Boolean(GITHUB_TOKEN && SESSION_PASSWORD);
+}
+
+function normalizeMemory() {
+  if (!memoryStore || typeof memoryStore !== 'object') memoryStore = {};
+  if (!memoryStore.stats || typeof memoryStore.stats !== 'object') memoryStore.stats = {};
+  memoryStore.version = 1;
+  memoryStore.updatedAt = memoryStore.updatedAt || null;
+  memoryStore.stats.totalMessages = Number(memoryStore.stats.totalMessages || 0);
+  memoryStore.stats.totalStickers = Number(memoryStore.stats.totalStickers || 0);
+  memoryStore.stats.totalVideoStickers = Number(memoryStore.stats.totalVideoStickers || 0);
+  memoryStore.stats.totalImageStickers = Number(memoryStore.stats.totalImageStickers || 0);
+  if (!memoryStore.chats || typeof memoryStore.chats !== 'object') memoryStore.chats = {};
+}
+
+async function readEncryptedMemoryFile(filename) {
+  const url =
+    'https://api.github.com/repos/' + GITHUB_REPO +
+    '/contents/' + filename +
+    '?ref=' + encodeURIComponent(MEMORY_BRANCH);
+
+  const response = await githubRequest(url);
+
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    const details = await response.text().catch(() => '');
+    throw new Error(
+      'GitHub memoria HTTP ' + response.status +
+      (details ? ' - ' + details.slice(0, 300) : '')
+    );
+  }
+
+  const file = await response.json();
+  const encrypted = Buffer.from(
+    file.content.replace(/\\n/g, ''),
+    'base64'
+  ).toString('utf8');
+
+  const decrypted = decryptSession(encrypted);
+  const parsed = JSON.parse(decrypted);
+
+  return {
+    data: parsed,
+    sha: file.sha
+  };
+}
+
+async function loadPersistentMemory() {
+  if (!memorySecurityReady()) {
+    console.warn('⚠️ Memoria GitHub no disponible: faltan GITHUB_TOKEN o SESSION_PASSWORD.');
+    memoryLoaded = false;
+    return false;
+  }
+
+  try {
+    const primary = await readEncryptedMemoryFile(ENCRYPTED_MEMORY_FILE);
+
+    if (primary?.data) {
+      memoryStore = primary.data;
+      normalizeMemory();
+      memoryLoaded = true;
+      console.log('🧠 Memoria restaurada desde GitHub.');
+      return true;
+    }
+
+    const backup = await readEncryptedMemoryFile(LAST_GOOD_MEMORY_FILE);
+
+    if (backup?.data) {
+      memoryStore = backup.data;
+      normalizeMemory();
+      memoryLoaded = true;
+      console.log('🛡️ Memoria restaurada desde el respaldo de GitHub.');
+      scheduleMemorySave(3000);
+      return true;
+    }
+
+    normalizeMemory();
+    memoryLoaded = true;
+    memoryDirty = true;
+    console.log('🧠 Nueva memoria inicializada.');
+    scheduleMemorySave(1000);
+    return false;
+  } catch (error) {
+    console.error('⚠️ No se pudo cargar la memoria principal:', error.message);
+
+    try {
+      const backup = await readEncryptedMemoryFile(LAST_GOOD_MEMORY_FILE);
+      if (backup?.data) {
+        memoryStore = backup.data;
+        normalizeMemory();
+        memoryLoaded = true;
+        console.log('🛡️ Memoria recuperada desde el respaldo.');
+        return true;
+      }
+    } catch (backupError) {
+      console.error('❌ Tampoco se pudo recuperar la memoria de respaldo:', backupError.message);
+    }
+
+    normalizeMemory();
+    memoryLoaded = true;
+    return false;
+  }
+}
+
+function rememberActivity(jid, mediaType = null) {
+  normalizeMemory();
+
+  memoryStore.updatedAt = new Date().toISOString();
+  memoryStore.stats.totalMessages += 1;
+
+  if (!jid) {
+    memoryDirty = true;
+    scheduleMemorySave();
+    return;
+  }
+
+  const key = String(jid);
+  if (!memoryStore.chats[key]) {
+    memoryStore.chats[key] = {
+      firstSeenAt: memoryStore.updatedAt,
+      lastSeenAt: memoryStore.updatedAt,
+      messages: 0,
+      stickers: 0,
+      videoStickers: 0,
+      imageStickers: 0
+    };
+  }
+
+  const chat = memoryStore.chats[key];
+  chat.lastSeenAt = memoryStore.updatedAt;
+  chat.messages = Number(chat.messages || 0) + 1;
+
+  if (mediaType === 'video') {
+    memoryStore.stats.totalVideoStickers += 1;
+    memoryStore.stats.totalStickers += 1;
+    chat.videoStickers = Number(chat.videoStickers || 0) + 1;
+    chat.stickers = Number(chat.stickers || 0) + 1;
+  } else if (mediaType === 'image') {
+    memoryStore.stats.totalImageStickers += 1;
+    memoryStore.stats.totalStickers += 1;
+    chat.imageStickers = Number(chat.imageStickers || 0) + 1;
+    chat.stickers = Number(chat.stickers || 0) + 1;
+  }
+
+  memoryDirty = true;
+  scheduleMemorySave();
+}
+
+async function savePersistentMemory() {
+  if (!memorySecurityReady() || !memoryLoaded || !memoryDirty) return false;
+
+  if (memorySaveRunning) {
+    memorySaveAgain = true;
+    return false;
+  }
+
+  memorySaveRunning = true;
+  lastMemorySaveAt = new Date().toISOString();
+
+  try {
+    normalizeMemory();
+    const encrypted = encryptSession(JSON.stringify(memoryStore));
+    const contentBase64 = Buffer.from(encrypted, 'utf8').toString('base64');
+
+    const url =
+      'https://api.github.com/repos/' + GITHUB_REPO +
+      '/contents/' + ENCRYPTED_MEMORY_FILE +
+      '?ref=' + encodeURIComponent(MEMORY_BRANCH);
+
+    let sha = null;
+    const existing = await githubRequest(url);
+
+    if (existing.ok) {
+      const existingFile = await existing.json();
+      sha = existingFile.sha;
+
+      const currentContent = existingFile.content?.replace(/\\n/g, '');
+      if (currentContent) {
+        const backupUrl =
+          'https://api.github.com/repos/' + GITHUB_REPO +
+          '/contents/' + LAST_GOOD_MEMORY_FILE +
+          '?ref=' + encodeURIComponent(MEMORY_BRANCH);
+
+        const backupExisting = await githubRequest(backupUrl);
+        let backupSha = null;
+
+        if (backupExisting.ok) {
+          const backupFile = await backupExisting.json();
+          backupSha = backupFile.sha;
+        } else if (backupExisting.status !== 404) {
+          const details = await backupExisting.text().catch(() => '');
+          throw new Error(
+            'No se pudo consultar respaldo de memoria: HTTP ' +
+            backupExisting.status +
+            (details ? ' - ' + details.slice(0, 400) : '')
+          );
+        }
+
+        const backupBody = {
+          message: 'Respaldar memoria persistente del bot',
+          content: currentContent,
+          branch: MEMORY_BRANCH
+        };
+
+        if (backupSha) backupBody.sha = backupSha;
+
+        const backupResponse = await githubRequest(backupUrl, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(backupBody)
+        });
+
+        if (!backupResponse.ok) {
+          const details = await backupResponse.text().catch(() => '');
+          throw new Error(
+            'No se pudo guardar respaldo de memoria: HTTP ' +
+            backupResponse.status +
+            (details ? ' - ' + details.slice(0, 500) : '')
+          );
+        }
+      }
+    } else if (existing.status !== 404) {
+      const details = await existing.text().catch(() => '');
+      throw new Error(
+        'No se pudo consultar memoria: HTTP ' +
+        existing.status +
+        (details ? ' - ' + details.slice(0, 400) : '')
+      );
+    }
+
+    const body = {
+      message: 'Actualizar memoria persistente del bot',
+      content: contentBase64,
+      branch: MEMORY_BRANCH
+    };
+
+    if (sha) body.sha = sha;
+
+    const response = await githubRequest(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    if (!response.ok) {
+      const details = await response.text().catch(() => '');
+      throw new Error(
+        'GitHub rechazó la memoria: HTTP ' +
+        response.status +
+        (details ? ' - ' + details.slice(0, 600) : '')
+      );
+    }
+
+    memoryDirty = false;
+    lastMemorySaveOk = true;
+    lastMemorySaveError = null;
+    console.log('✅ Memoria guardada en GitHub.');
+    return true;
+  } catch (error) {
+    lastMemorySaveOk = false;
+    lastMemorySaveError = error.message;
+    console.error('❌ No se pudo guardar la memoria:', error.message);
+    return false;
+  } finally {
+    memorySaveRunning = false;
+
+    if (memorySaveAgain || memoryDirty) {
+      memorySaveAgain = false;
+      scheduleMemorySave(15000);
+    }
+  }
+}
+
+function scheduleMemorySave(delay = 15000) {
+  if (!memorySecurityReady() || shuttingDown) return;
+  if (memorySaveTimer || memorySaveRunning) return;
+
+  memorySaveTimer = setTimeout(() => {
+    memorySaveTimer = null;
+    savePersistentMemory().catch(error => {
+      console.error('Error guardando memoria programada:', error.message);
+    });
+  }, delay);
 }
 
 async function downloadEncryptedSession() {
@@ -816,6 +1130,10 @@ async function handleMessage(update) {
 
   const text = getText(message);
 
+  // Registro ligero en memoria: no toca GitHub aquí.
+  // Solo actualiza RAM y el guardado se agrupa en segundo plano.
+  rememberActivity(message.key?.remoteJid, null);
+
   if (/^(menu|ayuda|help)$/i.test(text)) {
     return sendText(
       message.key.remoteJid,
@@ -828,6 +1146,7 @@ async function handleMessage(update) {
 
   const direct = findMedia(message);
   if (direct) {
+    rememberActivity(message.key?.remoteJid, direct.type);
     return createSticker(message, message, direct.type);
   }
 
@@ -835,6 +1154,7 @@ async function handleMessage(update) {
   if (quoted) {
     const quotedMedia = findMedia(quoted);
     if (quotedMedia) {
+      rememberActivity(message.key?.remoteJid, quotedMedia.type);
       return createSticker(message, quoted, quotedMedia.type);
     }
   }
@@ -1196,6 +1516,12 @@ app.get('/health', async (_req, res) => {
     githubReadStatus,
     respaldoUltimaSesion: LAST_GOOD_SESSION_FILE,
     githubConfigurado: sessionSecurityReady(),
+    memoriaCargada: memoryLoaded,
+    memoriaPendiente: memoryDirty,
+    ultimaGuardadoMemoria: lastMemorySaveAt,
+    ultimaGuardadoMemoriaExitoso: lastMemorySaveOk,
+    ultimoErrorMemoria: lastMemorySaveError,
+    ramaMemoria: MEMORY_BRANCH,
     ultimaSubidaSesion: lastSessionUploadAt,
     ultimaSubidaExitosa: lastSessionUploadOk,
     ultimoErrorSubidaSesion: lastSessionUploadError,
@@ -1334,6 +1660,9 @@ async function gracefulShutdown(signal) {
     } else {
       console.log('⏸️ Apagado: no se sobrescribe la sesión de GitHub porque no está vinculada.');
     }
+
+    clearTimeout(memorySaveTimer);
+    await savePersistentMemory();
   } catch (error) {
     console.error('❌ No se pudo guardar la sesión al apagar:', error.message);
   }
@@ -1354,8 +1683,9 @@ app.listen(PORT, async () => {
   try {
     if (sessionSecurityReady()) {
       await downloadEncryptedSession();
+      await loadPersistentMemory();
     } else {
-      console.warn('⚠️ Render no tiene configurados GITHUB_TOKEN + SESSION_PASSWORD; la sesión no podrá sobrevivir a un redeploy.');
+      console.warn('⚠️ Render no tiene configurados GITHUB_TOKEN + SESSION_PASSWORD; la sesión y memoria no podrán sobrevivir a un redeploy.');
     }
 
     const credsPath = path.join(SESSION_DIR, 'creds.json');
