@@ -396,6 +396,7 @@ let loginRefreshPromise = null;
 let connectionState = 'desconectado';
 let reconnectTimer = null;
 let reconnectAttempts = 0;
+let sessionRecoveryFailures = 0;
 let lastConnectedAt = null;
 let lastDisconnectAt = null;
 let lastDisconnectCode = null;
@@ -752,6 +753,7 @@ async function startSocket(restoreSession = true) {
     if (connection === 'open') {
       connectionState = 'conectado';
       reconnectAttempts = 0;
+      sessionRecoveryFailures = 0;
       lastConnectedAt = new Date().toISOString();
       lastDisconnectCode = null;
       lastDisconnectReason = null;
@@ -810,6 +812,43 @@ async function startSocket(restoreSession = true) {
 
       if (statusCode !== 515) {
         pairingRequested = false;
+      }
+
+      // Una sesión restaurada puede fallar por credenciales antiguas o
+      // desincronizadas. No la borramos al primer fallo: damos 4 intentos
+      // antes de considerarla irrecuperable.
+      const retryableSessionFailure =
+        statusCode === 401 ||
+        statusCode === 408 ||
+        statusCode === 428 ||
+        statusCode === 440;
+
+      if (retryableSessionFailure) {
+        sessionRecoveryFailures += 1;
+        console.log(
+          '🔐 Fallo de sesión restaurada #' +
+          sessionRecoveryFailures +
+          ' de 4.'
+        );
+
+        if (sessionRecoveryFailures >= 4) {
+          console.error('🧹 La sesión restaurada falló 4 veces. Se limpiará para permitir una nueva vinculación.');
+          clearTimeout(reconnectTimer);
+
+          try {
+            fs.rmSync(SESSION_DIR, { recursive: true, force: true });
+          } catch {}
+          fs.mkdirSync(SESSION_DIR, { recursive: true });
+
+          await deleteEncryptedSession();
+
+          pairingNumber = null;
+          pairingCode = null;
+          pairingRequested = false;
+          pairingError = 'La sesión anterior ya no es válida. Genera un nuevo código de vinculación.';
+          connectionState = 'desconectado';
+          return;
+        }
       }
 
       scheduleReconnect(statusCode);
@@ -924,7 +963,8 @@ app.get('/health', async (_req, res) => {
     ultimaConexion: lastConnectedAt,
     ultimaDesconexion: lastDisconnectAt,
     ultimoCodigoDesconexion: lastDisconnectCode,
-    intentosReconectar: reconnectAttempts
+    intentosReconectar: reconnectAttempts,
+    fallosSesionRestaurada: sessionRecoveryFailures
   });
 });
 
