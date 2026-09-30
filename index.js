@@ -276,7 +276,10 @@ async function uploadEncryptedSession() {
     // Si un deploy defectuoso genera credenciales registradas pero problemáticas,
     // esta copia permite recuperar la sesión anterior.
     if (sha && existing.ok) {
-      const existingFile = await existing.clone().json().catch(() => null);
+      const currentFileResponse = await githubRequest(url);
+      const existingFile = currentFileResponse.ok
+        ? await currentFileResponse.json().catch(() => null)
+        : null;
       if (existingFile?.content) {
         const backupUrl = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + LAST_GOOD_SESSION_FILE + '?ref=' + encodeURIComponent(SESSION_BRANCH);
         const backupExisting = await githubRequest(backupUrl);
