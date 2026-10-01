@@ -788,6 +788,8 @@ let lastDisconnectReason = null;
 let socketGeneration = 0;
 let shuttingDown = false;
 const processing = new Set();
+let lastMessageReceivedAt = null;
+let lastMessageProcessedAt = null;
 
 function getText(message) {
   const m = unwrapMessage(message);
@@ -962,7 +964,7 @@ async function createFastVideoSticker(buffer, duration) {
     const command = ffmpeg(input)
       .videoFilters([
         'fps=12',
-        'scale=512:512:force_original_aspect_ratio=increase:flags=lanczos',
+        'scale=512:512:force_original_aspect_ratio=increase:flags=bicubic',
         'crop=512:512:(iw-512)/2:(ih-512)/2',
         'setsar=1'
       ])
@@ -985,13 +987,17 @@ async function createStickerWork(message, sourceMessage, mediaType) {
 
   // En vez de reacciones, avisar directamente sobre el mensaje que se
   // convertirá en sticker para que quede claro qué está procesando.
-  await sock.sendMessage(
-    jid,
-    { text: mediaType === 'video'
-      ? '🎥 Voy a empezar a hacer tu sticker. ⏳ Espera un momento...'
-      : '⏳ Voy a empezar a hacer tu sticker. Espera un momento...' },
-    { quoted: sourceMessage }
-  );
+  try {
+    await sock.sendMessage(
+      jid,
+      { text: mediaType === 'video'
+        ? '🎥 Voy a empezar a hacer tu sticker. ⏳ Espera un momento...'
+        : '⏳ Voy a empezar a hacer tu sticker. Espera un momento...' },
+      { quoted: sourceMessage }
+    );
+  } catch (ackError) {
+    console.error('⚠️ No se pudo enviar el aviso inicial; continuaré con el sticker:', ackError.message);
+  }
 
   let buffer = await downloadMediaMessage(
     sourceMessage,
@@ -1050,8 +1056,8 @@ async function createSticker(message, sourceMessage, mediaType) {
 
     let reason = error?.message || error?.toString?.() || 'Error desconocido';
     reason = reason
-      .replace(/\\s+/g, ' ')
-      .replace(/^Error:\\s*/i, '')
+      .replace(/\s+/g, ' ')
+      .replace(/^Error:\s*/i, '')
       .trim();
 
     if (reason.length > 220) reason = reason.slice(0, 217) + '...';
@@ -1069,12 +1075,14 @@ async function createSticker(message, sourceMessage, mediaType) {
 async function handleMessage(update) {
   const message = update?.messages?.[0];
   if (!message || message.key?.fromMe) return;
+  lastMessageReceivedAt = new Date().toISOString();
 
   const text = getText(message);
 
   // Registro ligero en memoria: no toca GitHub aquí.
   // Solo actualiza RAM y el guardado se agrupa en segundo plano.
   rememberActivity(message.key?.remoteJid, null);
+  lastMessageProcessedAt = new Date().toISOString();
 
   if (/^(menu|ayuda|help)$/i.test(text)) {
     return sendText(
