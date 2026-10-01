@@ -904,14 +904,14 @@ async function createAnimatedWebpSticker(buffer, duration = 10) {
     const command = ffmpeg(input)
       .videoFilters([
         'fps=12',
-        'scale=512:512:force_original_aspect_ratio=increase:flags=lanczos',
+        'scale=512:512:force_original_aspect_ratio=increase:flags=bicubic',
         'crop=512:512:(iw-512)/2:(ih-512)/2',
         'setsar=1'
       ])
       .outputOptions([
         '-t ' + actualDuration, '-an', '-c:v libwebp_anim',
         '-lossless 0', '-q:v 55', '-compression_level 4',
-        '-loop 0', '-preset picture', '-threads 1'
+        '-loop 0', '-preset picture', '-threads 2'
       ]);
 
     await runStickerFfmpeg(command, output, 'FFmpeg sticker principal');
@@ -969,7 +969,7 @@ async function createFastVideoSticker(buffer, duration) {
       .outputOptions([
         '-t ' + Math.min(Math.max(Number(duration) || 10, 0.1), 10),
         '-an', '-c:v libwebp_anim', '-lossless 0', '-q:v 46',
-        '-compression_level 4', '-loop 0', '-preset picture', '-threads 1'
+        '-compression_level 4', '-loop 0', '-preset picture', '-threads 2'
       ]);
 
     await runStickerFfmpeg(command, output, 'FFmpeg sticker segundo intento');
@@ -987,7 +987,9 @@ async function createStickerWork(message, sourceMessage, mediaType) {
   // convertirá en sticker para que quede claro qué está procesando.
   await sock.sendMessage(
     jid,
-    { text: '⏳ Espera, estoy preparando tu sticker...' },
+    { text: mediaType === 'video'
+      ? '🎥 Voy a empezar a hacer tu sticker. ⏳ Espera un momento...'
+      : '⏳ Voy a empezar a hacer tu sticker. Espera un momento...' },
     { quoted: sourceMessage }
   );
 
