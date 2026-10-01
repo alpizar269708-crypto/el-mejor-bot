@@ -867,6 +867,33 @@ async function requestPairingCodeIfNeeded() {
   }
 }
 
+const FFMPEG_STICKER_TIMEOUT_MS = 120000;
+
+function runStickerFfmpeg(command, output, label = 'FFmpeg') {
+  return new Promise((resolve, reject) => {
+    let finished = false;
+
+    const finish = (error) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeout);
+      if (error) reject(error);
+      else resolve();
+    };
+
+    const timeout = setTimeout(() => {
+      console.error('⏱️ ' + label + ' tardó demasiado; se cancela para liberar la cola.');
+      try { command.kill('SIGKILL'); } catch {}
+      finish(new Error('El video tardó demasiado en procesarse y fue cancelado para que el bot siga funcionando.'));
+    }, FFMPEG_STICKER_TIMEOUT_MS);
+
+    command
+      .on('end', () => finish())
+      .on('error', error => finish(error))
+      .save(output);
+  });
+}
+
 async function createAnimatedWebpSticker(buffer, duration = 10) {
   const actualDuration = Math.min(Math.max(Number(duration) || 10, 0.1), 10);
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-sticker-'));
@@ -874,20 +901,21 @@ async function createAnimatedWebpSticker(buffer, duration = 10) {
   const output = path.join(tempDir, 'sticker.webp');
   try {
     await fs.promises.writeFile(input, buffer);
-    await new Promise((resolve, reject) => {
-      ffmpeg(input)
-        .videoFilters([
-          'fps=12',
-          'scale=512:512:force_original_aspect_ratio=increase:flags=lanczos',
-          'crop=512:512:(iw-512)/2:(ih-512)/2'
-        ])
-        .outputOptions([
-          '-t ' + actualDuration, '-an', '-c:v libwebp_anim',
-          '-lossless 0', '-q:v 55', '-compression_level 4',
-          '-loop 0', '-preset picture', '-threads 1'
-        ])
-        .on('end', resolve).on('error', reject).save(output);
-    });
+    const command = ffmpeg(input)
+      .videoFilters([
+        'fps=12',
+        'scale=512:512:force_original_aspect_ratio=increase:flags=lanczos',
+        'crop=512:512:(iw-512)/2:(ih-512)/2',
+        'setsar=1'
+      ])
+      .outputOptions([
+        '-t ' + actualDuration, '-an', '-c:v libwebp_anim',
+        '-lossless 0', '-q:v 55', '-compression_level 4',
+        '-loop 0', '-preset picture', '-threads 1'
+      ]);
+
+    await runStickerFfmpeg(command, output, 'FFmpeg sticker principal');
+
     const result = await fs.promises.readFile(output);
     console.log('🎥 WebP directo: ' + Math.round(result.length / 1024 * 10) / 10 + ' KB');
     return result;
@@ -911,9 +939,16 @@ async function drainVideoQueue() {
   try {
     while (videoQueue.length) {
       const job = videoQueue.shift();
-      try { job.resolve(await job.task()); } catch (error) { job.reject(error); }
+      console.log('🎬 Procesando video. Cola restante:', videoQueue.length);
+      try {
+        job.resolve(await job.task());
+      } catch (error) {
+        job.reject(error);
+      }
     }
-  } finally { videoQueueRunning = false; }
+  } finally {
+    videoQueueRunning = false;
+  }
 }
 async function createFastVideoSticker(buffer, duration) {
   let result = await createAnimatedWebpSticker(buffer, duration);
@@ -924,21 +959,20 @@ async function createFastVideoSticker(buffer, duration) {
   const output = path.join(tempDir, 'sticker.webp');
   try {
     await fs.promises.writeFile(input, buffer);
-    await new Promise((resolve, reject) => {
-      ffmpeg(input)
-        .videoFilters([
-          'fps=12',
-          'scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos',
-          'pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000',
-          'setsar=1'
-        ])
-        .outputOptions([
-          '-t ' + Math.min(Math.max(Number(duration) || 10, 0.1), 10),
-          '-an', '-c:v libwebp_anim', '-lossless 0', '-q:v 46',
-          '-compression_level 4', '-loop 0', '-preset picture', '-threads 1'
-        ])
-        .on('end', resolve).on('error', reject).save(output);
-    });
+    const command = ffmpeg(input)
+      .videoFilters([
+        'fps=12',
+        'scale=512:512:force_original_aspect_ratio=increase:flags=lanczos',
+        'crop=512:512:(iw-512)/2:(ih-512)/2',
+        'setsar=1'
+      ])
+      .outputOptions([
+        '-t ' + Math.min(Math.max(Number(duration) || 10, 0.1), 10),
+        '-an', '-c:v libwebp_anim', '-lossless 0', '-q:v 46',
+        '-compression_level 4', '-loop 0', '-preset picture', '-threads 1'
+      ]);
+
+    await runStickerFfmpeg(command, output, 'FFmpeg sticker segundo intento');
     result = await fs.promises.readFile(output);
     console.log('🎥 WebP segundo intento: ' + Math.round(result.length / 1024 * 10) / 10 + ' KB');
   } finally {
