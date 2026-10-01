@@ -983,9 +983,13 @@ async function createFastVideoSticker(buffer, duration) {
 async function createStickerWork(message, sourceMessage, mediaType) {
   const jid = message.key.remoteJid;
 
-  await sock.sendMessage(jid, {
-    react: { text: '⏳', key: message.key }
-  });
+  // En vez de reacciones, avisar directamente sobre el mensaje que se
+  // convertirá en sticker para que quede claro qué está procesando.
+  await sock.sendMessage(
+    jid,
+    { text: '⏳ Espera, estoy preparando tu sticker...' },
+    { quoted: sourceMessage }
+  );
 
   let buffer = await downloadMediaMessage(
     sourceMessage,
@@ -1024,9 +1028,6 @@ async function createStickerWork(message, sourceMessage, mediaType) {
     rememberActivity(jid, 'image');
   }
 
-  await sock.sendMessage(jid, {
-    react: { text: '✅', key: message.key }
-  });
 }
 
 async function createSticker(message, sourceMessage, mediaType) {
