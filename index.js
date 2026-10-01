@@ -929,7 +929,8 @@ async function createFastVideoSticker(buffer, duration) {
         .videoFilters([
           'fps=12',
           'scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos',
-          'pad=ceil(iw/2)*2:ceil(ih/2)*2'
+          'pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000',
+          'setsar=1'
         ])
         .outputOptions([
           '-t ' + Math.min(Math.max(Number(duration) || 10, 0.1), 10),
