@@ -1592,6 +1592,33 @@ process.on('uncaughtException', error => {
   process.exit(1);
 });
 
+
+// Reinicio único del socket después del arranque para evitar dejar una conexión
+// vieja/desincronizada viva después de un redeploy de Render.
+let startupSocketResetDone = false;
+function scheduleStartupSocketReset() {
+  setTimeout(async () => {
+    if (startupSocketResetDone || shuttingDown) return;
+    startupSocketResetDone = true;
+
+    if (connectionState !== 'conectado' || !sock) return;
+
+    console.log('🔄 Reinicio preventivo del socket después del deploy...');
+    try { sock?.ws?.close(); } catch {}
+    sock = null;
+    authState = null;
+    connectionState = 'desconectado';
+
+    try {
+      await startSocket(false);
+      console.log('✅ Socket reiniciado correctamente después del deploy.');
+    } catch (error) {
+      console.error('❌ No se pudo reiniciar el socket después del deploy:', error.message);
+      scheduleReconnect(null);
+    }
+  }, 15000);
+}
+
 async function gracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -1653,6 +1680,7 @@ app.listen(PORT, async () => {
 
       if (registered) {
         await startSocket(false);
+        scheduleStartupSocketReset();
       } else {
         // No dejar un socket colgado con credenciales de una vinculación
         // que nunca terminó. Limpiamos esa sesión incompleta para que
