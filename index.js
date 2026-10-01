@@ -878,8 +878,8 @@ async function createAnimatedWebpSticker(buffer, duration = 10) {
       ffmpeg(input)
         .videoFilters([
           'fps=12',
-          'scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos',
-          'pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000'
+          'scale=512:512:force_original_aspect_ratio=increase:flags=lanczos',
+          'crop=512:512:(iw-512)/2:(ih-512)/2'
         ])
         .outputOptions([
           '-t ' + actualDuration, '-an', '-c:v libwebp_anim',
