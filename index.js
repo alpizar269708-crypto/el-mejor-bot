@@ -1099,15 +1099,15 @@ async function handleMessage(update) {
     const mb = bytes => Math.round(bytes / 1024 / 1024);
     return sendText(
       message.key.remoteJid,
-      '🧹 *LIBERARCACHE*\\n\\n' +
-      '📥 Descargas pendientes canceladas: ' + descargas.pendientesCancelados + '\\n' +
-      '🎬 Stickers de video pendientes cancelados: ' + stickersCancelados.length + '\\n' +
-      '⏳ Descarga activa: ' + (estado.descargaActiva ? 'sí (' + estado.segundosActiva + ' s)' : 'no') + '\\n' +
-      '📦 Descargas pendientes restantes: ' + estado.pendientes + '\\n' +
-      '🧠 RAM usada: ' + mb(memoria.heapUsed) + ' MB heap; ' + mb(memoria.rss) + ' MB total\\n' +
+      '🧹 *LIBERARCACHE*\n\n' +
+      '📥 Descargas pendientes canceladas: ' + descargas.pendientesCancelados + '\n' +
+      '🎬 Stickers de video pendientes cancelados: ' + stickersCancelados.length + '\n' +
+      '⏳ Descarga activa: ' + (estado.descargaActiva ? 'sí (' + estado.segundosActiva + ' s)' : 'no') + '\n' +
+      '📦 Descargas pendientes restantes: ' + estado.pendientes + '\n' +
+      '🧠 RAM usada: ' + mb(memoria.heapUsed) + ' MB heap; ' + mb(memoria.rss) + ' MB total\n' +
       (typeof global.gc === 'function'
         ? '✅ Recolección de memoria solicitada.'
-        : 'ℹ️ La recolección automática de memoria sigue activa; este proceso no permite forzarla.') + '\\n\\n' +
+        : 'ℹ️ La recolección automática de memoria sigue activa; este proceso no permite forzarla.') + '\n\n' +
       'Nota: no se borra la sesión ni la memoria persistente. Si una descarga activa está bloqueada, tiene un límite de tiempo y no se cancela a la fuerza.',
       message
     );
