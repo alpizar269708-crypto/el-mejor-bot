@@ -102,3 +102,32 @@ test('rechaza rutas de restauración que intentan salir de la carpeta de sesión
   };
   assert.throws(() => validateSessionSnapshot(files), /ruta de archivo inválida/);
 });
+
+test('FFmpeg genera un WebP verdaderamente animado con el binario instalado', async t => {
+  const fs = require('node:fs/promises');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { execFileSync } = require('node:child_process');
+  const installer = require('@ffmpeg-installer/ffmpeg');
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bot-ffmpeg-test-'));
+  const output = path.join(tempDir, 'animated.webp');
+  try {
+    execFileSync(installer.path, [
+      '-hide_banner', '-loglevel', 'error',
+      '-f', 'lavfi', '-i', 'testsrc=size=96x96:rate=8',
+      '-t', '1', '-vf', 'fps=8',
+      '-an', '-c:v', 'libwebp_anim', '-lossless', '0',
+      '-q:v', '50', '-compression_level', '4', '-loop', '0',
+      '-preset', 'picture', '-threads', '1', '-y', output
+    ], { timeout: 30000, stdio: 'pipe' });
+
+    const generated = await fs.readFile(output);
+    const result = inspectWebpAnimation(generated);
+    assert.equal(result.valid, true, result.reason || 'WebP inválido');
+    assert.equal(result.animated, true, result.reason || 'WebP estático');
+    assert.ok(generated.length <= 450 * 1024, 'el sticker supera el límite interno de 450 KB');
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
