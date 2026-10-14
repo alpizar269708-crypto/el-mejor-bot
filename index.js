@@ -695,6 +695,9 @@ async function collectSession() {
   const walk = async (dir, prefix = '') => {
     const entries = await fs.promises.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
+      // .gitkeep solo mantiene vacía la carpeta en GitHub; no forma parte
+      // de las credenciales de Baileys y nunca debe entrar al respaldo cifrado.
+      if (entry.name === '.gitkeep') continue;
       const rel = path.join(prefix, entry.name);
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) await walk(full, rel);
