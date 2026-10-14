@@ -589,19 +589,26 @@ async function downloadEncryptedSession(options = {}) {
     }
   }
 
-  // No llenar los logs en cada arranque si al final sí se recuperó una copia.
-  // Solo reportar las copias inválidas cuando ninguna fuente pudo restaurarse.
-  for (const invalid of invalidSnapshots) {
-    console.warn('⚠️ Se ignora ' + invalid.filename + ' en ' + invalid.branch + ': ' + invalid.message);
-  }
-  for (const issue of restoreIssues) {
-    console.warn('⚠️ No se pudo restaurar ' + issue.filename + ' desde ' + issue.branch + ': ' + issue.message);
-  }
-
-  if (backupOnly) {
-    console.warn('⚠️ No se pudo recuperar ninguna sesión válida desde el respaldo.');
+  // Mantener los logs de arranque legibles: solo una línea por intento fallido.
+  // El detalle por archivo queda disponible activando SESSION_DEBUG=1.
+  if (invalidSnapshots.length || restoreIssues.length) {
+    console.warn(
+      '⚠️ No se encontró una copia cifrada completa para restaurar; ' +
+      'todas las copias remotas se conservaron (incompletas: ' +
+      invalidSnapshots.length + ', errores de lectura: ' + restoreIssues.length + ').'
+    );
+    if (process.env.SESSION_DEBUG === '1') {
+      for (const invalid of invalidSnapshots) {
+        console.warn('SESSION_DEBUG: ' + invalid.filename + ' en ' + invalid.branch + ': ' + invalid.message);
+      }
+      for (const issue of restoreIssues) {
+        console.warn('SESSION_DEBUG: ' + issue.filename + ' en ' + issue.branch + ': ' + issue.message);
+      }
+    }
+  } else if (backupOnly) {
+    console.warn('⚠️ No se pudo recuperar ninguna sesión válida del respaldo; las copias se conservaron.');
   } else {
-    console.log('ℹ️ Ninguna de las copias cifradas contiene una sesión válida para restaurar.');
+    console.log('ℹ️ No hay una copia cifrada válida para restaurar; no se borró ninguna copia remota.');
   }
   restoredSessionSource = null;
   restoredSessionBranch = null;
@@ -1791,15 +1798,20 @@ async function startSocketInternal(restoreSession = true) {
         await sessionIoTail.catch(() => {});
         if (shuttingDown || recoveryGeneration !== socketGeneration) return;
 
-        try {
-          fs.rmSync(SESSION_DIR, { recursive: true, force: true });
-        } catch {}
-        fs.mkdirSync(SESSION_DIR, { recursive: true });
-
         const rejectedSource = rejectedSourceAtClose;
         const rejectedSourceBranch = rejectedSourceBranchAtClose;
+        if (rejectedSource) {
+          rejectedRemoteSessionSources.add(rejectedSourceBranch + ':' + rejectedSource);
+          console.warn('🛡️ WhatsApp rechazó una copia de sesión; se conserva en GitHub y no se volverá a probar en este proceso.');
+        }
         restoredSessionSource = null;
         restoredSessionBranch = null;
+
+        if (!quarantineLocalSessionDirectory('rejected')) {
+          pairingError = 'WhatsApp rechazó la sesión; la copia local se conservó porque no fue posible apartarla. No se borraron copias remotas.';
+          connectionState = 'desconectado';
+          return;
+        }
 
         // Una vinculación manual incompleta nunca debe sustituirse por un vínculo viejo.
         if (pairingWasInProgress) {
@@ -1814,8 +1826,8 @@ async function startSocketInternal(restoreSession = true) {
           return;
         }
 
-        // Si WhatsApp rechazó el respaldo, retiramos únicamente esa copia e
-        // intentamos la principal en modo aislado, sin volver al mismo respaldo.
+        // Si WhatsApp rechazó el respaldo, se conserva; intentamos la principal
+        // en modo aislado sin volver a utilizar ese mismo archivo.
         if (rejectedSource === LAST_GOOD_SESSION_FILE) {
           // WhatsApp rechazó esta copia, pero no la borramos de GitHub.
           // Primero probamos la principal y, después, la rama heredada.
@@ -2316,17 +2328,18 @@ app.listen(PORT, () => {
         if (registered) {
           await startSocket(false);
         } else {
-          try {
-            fs.rmSync(SESSION_DIR, { recursive: true, force: true });
-          } catch {}
-          fs.mkdirSync(SESSION_DIR, { recursive: true });
-          // Mantener el respaldo remoto para que una vinculación interrumpida
-          // nunca destruya la última sesión válida.
+          if (!quarantineLocalSessionDirectory('incomplete')) {
+            pairingError = 'La sesión local está incompleta, pero no se pudo apartar sin borrarla. No se borró ningún respaldo remoto.';
+            connectionState = 'desconectado';
+            return;
+          }
+          // La copia incompleta se conserva aparte y el directorio activo queda
+          // limpio para permitir una nueva vinculación.
           connectionState = 'desconectado';
-          pairingError = 'La sesión anterior estaba incompleta. Genera un nuevo código de vinculación.';
+          pairingError = 'La sesión anterior estaba incompleta. La copia local se conservó aparte; genera un nuevo código si necesitas vincular.';
         }
       } else {
-        console.log('Sin sesión válida. Esperando QR o código solicitado por el usuario.');
+        console.log('Esperando QR o código de vinculación.');
       }
     } catch (error) {
       console.error('❌ Error restaurando sesión inicial:', error.message);
