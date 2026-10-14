@@ -15,4 +15,4 @@ services:
     plan: starter
     schedule: "*/10 * * * *"
     buildCommand: "YOUTUBE_DL_HOST=https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux npm install --no-audit --no-fund"
-    startCommand: curl -fsS https://el-mejor-bot.onrender.com/keepalive
+    startCommand: curl -fsS --max-time 25 --retry 2 --retry-delay 3 https://el-mejor-bot-tmw5.onrender.com/keepalive
