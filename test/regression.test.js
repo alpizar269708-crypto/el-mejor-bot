@@ -456,10 +456,12 @@ test('detecta la duración real de FFmpeg y no convierte videos cortos en sticke
 
 test('prioriza fotogramas fluidos en stickers animados y mantiene la duración de clips cortos', () => {
   const attempts = buildVideoStickerAttempts(3.04);
-  assert.ok(attempts.length >= 8);
+  assert.ok(attempts.length >= 10);
   assert.ok(attempts.every(attempt => attempt.fps >= 8), 'no debe degradar a 3–5 FPS');
   assert.ok(attempts.every(attempt => attempt.duration === 3.04), 'un clip de 3 s no se alarga ni recorta');
   assert.ok(attempts[0].fps >= 12, 'la primera opción debe priorizar fluidez');
+  assert.equal(attempts[0].size, 512, 'primero conserva la calidad espacial original');
+  assert.ok(attempts.some(attempt => attempt.size < 512), 'después debe reducir detalle antes que FPS');
   assert.equal(MAX_ANIMATED_STICKER_BYTES, 480 * 1024);
   assert.ok(MAX_ANIMATED_STICKER_BYTES < 500 * 1024);
   assert.equal(buildVideoStickerAttempts(10).at(-1).duration, 4);
