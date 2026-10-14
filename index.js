@@ -26,7 +26,7 @@ const execFileAsync = promisify(execFile);
 
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
-const { comandoDescargaSocial, extraerUrl, detectarPlataforma, liberarColaDescargas, estadoColaDescargas } = require('./descargasSociales');
+const { comandoDescargaSocial, extraerUrl, analizarSolicitudDescarga, detectarPlataforma, MAX_MEDIA_BYTES, liberarColaDescargas, estadoColaDescargas } = require('./descargasSociales');
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN?.trim();
@@ -1398,44 +1398,31 @@ async function handleMessage(update) {
     );
   }
 
-  const trimmedText = text.trim();
-  const genericDownload = trimmedText.match(/^(?:descargar|descarga|download)\s+([\s\S]+)$/i);
-  if (genericDownload) {
-    const url = extraerUrl(genericDownload[1], 'auto');
+  const downloadRequest = analizarSolicitudDescarga(text);
+  if (downloadRequest) {
+    const plataforma = downloadRequest.plataforma;
+    const url = extraerUrl(downloadRequest.enlace, plataforma);
+
     if (!url) {
-      return sendText(message.key.remoteJid, '⚠️ Usa: descargar https://enlace-publico-de-imagen-o-video', message);
+      const nombres = {
+        tiktok: 'TikTok', instagram: 'Instagram', x: 'X', youtube: 'YouTube',
+        pinterest: 'Pinterest', facebook: 'Facebook', reddit: 'Reddit', threads: 'Threads'
+      };
+      const nombre = nombres[plataforma] || plataforma;
+      const ayuda = plataforma === 'auto'
+        ? '⚠️ Usa: descargar https://enlace-publico-de-imagen-o-video'
+        : '⚠️ Envíame un enlace público válido de ' + nombre +
+          '. Ejemplo: ' + plataforma + ' https://...';
+      return sendText(message.key.remoteJid, ayuda, message);
     }
+
     return comandoDescargaSocial(
       sock,
       message.key.remoteJid,
       message,
       url,
-      detectarPlataforma(url) || 'auto'
+      detectarPlataforma(url) || plataforma
     );
-  }
-
-  const socialMatch = trimmedText.match(/^(tiktok|instagram|x|twitter|youtube|youtu\.be|pinterest|facebook|reddit|threads)\b/i);
-  if (socialMatch) {
-    const comando = socialMatch[1].toLowerCase();
-    const plataforma = comando === 'twitter' ? 'x' : comando === 'youtu.be' ? 'youtube' : comando;
-    const argumentos = trimmedText.replace(/^(tiktok|instagram|x|twitter|youtube|youtu\.be|pinterest|facebook|reddit|threads)\b/i, '').trim();
-    return comandoDescargaSocial(sock, message.key.remoteJid, message, argumentos, plataforma);
-  }
-
-  // Descargar automáticamente enlaces públicos a contenido multimedia, aunque
-  // el host no tenga un extractor dedicado. Para texto normal se requiere una URL sola.
-  const isBareUrl = /^(?:https?:\/\/)?(?:[a-z0-9.-]+)(?::\d{1,5})?(?:[/?#][^\s]*)?$/i.test(trimmedText);
-  if (isBareUrl) {
-    const url = extraerUrl(trimmedText, 'auto');
-    if (url) {
-      return comandoDescargaSocial(
-        sock,
-        message.key.remoteJid,
-        message,
-        url,
-        detectarPlataforma(url) || 'auto'
-      );
-    }
   }
 
   if (!isStickerCommand(text)) return;
