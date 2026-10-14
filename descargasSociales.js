@@ -1,7 +1,6 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const crypto = require('crypto');
 const youtubeDlExec = require('youtube-dl-exec');
 
 const youtubedl = youtubeDlExec;
@@ -34,7 +33,7 @@ async function descargarVideo(url, plataforma) {
     const opciones = {
       output,
       format: plataforma === 'instagram'
-        ? 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio/best'
+        ? 'best[ext=mp4]/best'
         : 'best[ext=mp4]/best',
       mergeOutputFormat: 'mp4',
       noWarnings: true,
