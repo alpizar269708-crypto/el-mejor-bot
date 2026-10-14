@@ -2094,18 +2094,21 @@ actualizarEstado();
 </html>`);
 });
 
-app.get('/keepalive', async (_req, res) => {
-  try {
-    await startSocketAfterWake();
-    res.status(200).json({
-      ok: true,
-      estado: connectionState,
-      whatsapp: connectionState === 'conectado'
-    });
-  } catch (error) {
-    console.error('❌ Keepalive no pudo revisar WhatsApp:', error.message);
-    res.status(503).json({ ok: false, estado: connectionState });
-  }
+app.get('/keepalive', (_req, res) => {
+  // Este endpoint solo confirma que el servidor HTTP está vivo. No debe
+  // devolver 503 por una reconexión de WhatsApp lenta o fallida: eso provoca
+  // que el cron de Render acumule fallos y se deshabilite automáticamente.
+  res.status(200).json({
+    ok: true,
+    estado: connectionState,
+    whatsapp: connectionState === 'conectado'
+  });
+
+  // La restauración/reconexión va en segundo plano para que el ping responda
+  // rápido incluso después de que Render despierte una instancia suspendida.
+  void startSocketAfterWake().catch(error => {
+    console.error('❌ Keepalive no pudo iniciar/revisar WhatsApp:', error.message);
+  });
 });
 
 app.get('/health', async (_req, res) => {
