@@ -20,7 +20,7 @@ jobs:
           package-manager-cache: false
       - name: Install dependencies
         env:
-          YOUTUBE_DL_HOST: https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_linux
+          YOUTUBE_DL_HOST: https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux
         run: npm install --no-audit --no-fund
       - name: Check JavaScript syntax
         run: npm run check
