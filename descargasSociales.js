@@ -448,6 +448,26 @@ async function listarArchivosMedia(tempDir) {
   return archivos;
 }
 
+function esErrorSinVideoInstagram(error) {
+  const detalle = String(error?.stderr || error?.message || error || '').toLowerCase();
+  return /there is no video in this post|no video formats found|no video formats/.test(detalle);
+}
+
+function crearCaptionDescarga(archivo, mediaKey, indice, total) {
+  if (total > 1) return '✅ Archivo ' + (indice + 1) + ' de ' + total + ' descargado.';
+  if (archivo?.tipo === 'image') {
+    return mediaKey === 'document'
+      ? '✅ Imagen descargada; se envía como documento para conservar el archivo original.'
+      : '✅ Imagen descargada.';
+  }
+  if (archivo?.tipo === 'video') {
+    return mediaKey === 'document'
+      ? '✅ Video descargado; se envía como documento para evitar límites de multimedia.'
+      : '✅ Video listo para enviar.';
+  }
+  return '✅ Archivo descargado.';
+}
+
 async function descargarArchivos(url, plataforma = 'auto') {
   const plataformaEfectiva = plataforma === 'auto' ? (detectarPlataforma(url) || 'auto') : plataforma;
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'social-download-'));
@@ -528,6 +548,39 @@ async function descargarArchivos(url, plataforma = 'auto') {
         errorVideo = errorBase || errorVideo;
       }
       archivos = await listarArchivosMedia(tempDir);
+    }
+
+    // Las publicaciones de Instagram que solo contienen fotos no tienen formatos
+    // de video. En ese caso yt-dlp puede escribir sus miniaturas si se ignora
+    // específicamente el error de formatos ausentes; se aprovechan como imágenes.
+    if (
+      !archivos.length &&
+      plataformaEfectiva === 'instagram' &&
+      esErrorSinVideoInstagram(errorVideo)
+    ) {
+      await limpiarDirectorio(tempDir);
+      await fs.promises.mkdir(tempDir, { recursive: true });
+      try {
+        await youtubedl(parsed.toString(), {
+          ...opcionesBase,
+          writeThumbnail: true,
+          ignoreNoFormatsError: true,
+          skipDownload: true
+        }, { timeout: TIMEOUT_MS });
+      } catch (thumbnailError) {
+        // Algunas versiones de yt-dlp devuelven error aun cuando escribieron miniaturas.
+        const detail = String(thumbnailError?.stderr || thumbnailError?.message || thumbnailError || '')
+          .replace(/\\s+/g, ' ').trim().slice(0, 250);
+        console.warn('⚠️ Instagram sin video; resultado del intento de miniaturas:', detail);
+      }
+
+      archivos = await listarArchivosMedia(tempDir);
+      if (!archivos.length) {
+        throw new Error(
+          'Instagram indica que esta publicación no contiene video y no se pudo recuperar una imagen. ' +
+          'Puede ser una publicación privada, eliminada o un carrusel que Instagram no está entregando al extractor.'
+        );
+      }
     }
 
     // Fallback de URL directa: permite enlaces genéricos que respondan image/*
@@ -634,19 +687,8 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma = 'aut
       try {
         for (let i = 0; i < result.archivos.length; i++) {
           const archivo = result.archivos[i];
-          const caption = result.archivos.length > 1
-            ? '✅ Archivo ' + (i + 1) + ' de ' + result.archivos.length + ' descargado.'
-            : (archivo.tipo === 'image'
-              ? '✅ Imagen descargada.'
-              : archivo.tipo === 'video'
-                ? (mediaKey === 'document'
-                  ? '✅ Video descargado; se envía como documento para evitar límites de multimedia.'
-                  : '✅ Video listo para enviar.')
-                : (mediaKey === 'document' && archivo.tipo === 'image'
-                  ? '✅ Imagen descargada; se envía como documento para conservar el archivo original.'
-                  : '✅ Archivo descargado.'));
-
           const mediaKey = tipoEnvioWhatsApp(archivo);
+          const caption = crearCaptionDescarga(archivo, mediaKey, i, result.archivos.length);
           const media = { url: archivo.path };
           const payload = {
             [mediaKey]: media,
@@ -687,6 +729,8 @@ module.exports = {
   MAX_INLINE_IMAGE_BYTES,
   MAX_INLINE_VIDEO_BYTES,
   tipoEnvioWhatsApp,
+  crearCaptionDescarga,
+  esErrorSinVideoInstagram,
   comandoDescargaSocial,
   descargarArchivos,
   extraerUrl,
