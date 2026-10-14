@@ -38,7 +38,6 @@ async function descargarVideo(url, plataforma) {
       mergeOutputFormat: 'mp4',
       noWarnings: true,
       noPlaylist: true,
-      noCheckCertificates: false,
       socketTimeout: 30,
       retries: 3,
       fragmentRetries: 3,
