@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extraerUrl, analizarSolicitudDescarga, detectarPlataforma, tipoMimetype, tipoEnvioWhatsApp, crearCaptionDescarga, esErrorSinVideoInstagram, extraerUrlsImagenInstagram, descargaDirecta, createMediaSizeLimiter, MAX_MEDIA_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_VIDEO_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
+const { extraerUrl, analizarSolicitudDescarga, detectarPlataforma, tipoMimetype, tipoEnvioWhatsApp, crearCaptionDescarga, esErrorSinVideoInstagram, extraerUrlsImagenInstagram, extraerUrlsImagenGalleryDl, descargaDirecta, createMediaSizeLimiter, MAX_MEDIA_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_VIDEO_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
 const { inspectWebpAnimation, parseMediaSizeBytes } = require('../stickerUtils');
 const { validateSessionSnapshot } = require('../sessionUtils');
 
@@ -36,6 +36,18 @@ test('reconoce enlaces de las plataformas admitidas', () => {
   for (const [platform, url] of cases) {
     assert.equal(extraerUrl(url, platform), new URL(url).toString(), platform);
   }
+});
+
+test('no interpreta mensajes normales de una palabra como comandos de descarga', () => {
+  for (const word of ['hola', 'gracias', 'buenas', 'ok', 'listo', '12345']) {
+    assert.equal(analizarSolicitudDescarga(word), null, word);
+  }
+  assert.deepEqual(analizarSolicitudDescarga('instagram'), {
+    tipo: 'platform', plataforma: 'instagram', enlace: ''
+  });
+  assert.deepEqual(analizarSolicitudDescarga('descargar'), {
+    tipo: 'generic', plataforma: 'auto', enlace: ''
+  });
 });
 
 test('no confunde URLs desnudas con comandos de plataforma', () => {
@@ -81,6 +93,24 @@ test('extrae imágenes públicas de Instagram desde el JSON del post y Open Grap
   assert.match(urls[2], /thumb[.]jpg/);
   assert.ok(urls.every(value => new URL(value).hostname.endsWith('cdninstagram.com')));
   assert.ok(!urls.some(value => value.includes('evil.example')));
+});
+
+test('filtra URLs de imágenes desde la salida de gallery-dl', () => {
+  const output = [
+    'https://scontent.cdninstagram.com/v/real1.jpg?token=abc',
+    'https://scontent-lax3-2.xx.fbcdn.net/v/real2.webp?token=xyz',
+    'warning: Instagram requested login',
+    'https://evil.example/not-instagram.jpg'
+  ].join('\n');
+
+  const urls = extraerUrlsImagenGalleryDl(output);
+  assert.equal(urls.length, 2);
+  assert.match(urls[0], /real1[.]jpg/);
+  assert.match(urls[1], /real2[.]webp/);
+  assert.ok(urls.every(value => {
+    const host = new URL(value).hostname;
+    return host.endsWith('cdninstagram.com') || host.endsWith('fbcdn.net');
+  }));
 });
 
 test('maneja publicaciones de Instagram sin video y genera captions sin referencia temporal inválida', () => {
