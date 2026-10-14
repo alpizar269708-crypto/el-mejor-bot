@@ -319,3 +319,41 @@ test('FFmpeg genera un WebP verdaderamente animado con el binario instalado', as
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
+
+
+test('wa-sticker-formatter crea un WebP estático válido y menor a 95 KB', async () => {
+  const sharp = require('sharp');
+  const { Sticker, StickerTypes } = require('wa-sticker-formatter');
+  const source = await sharp({
+    create: {
+      width: 512,
+      height: 512,
+      channels: 4,
+      background: { r: 52, g: 128, b: 220, alpha: 1 }
+    }
+  }).png().toBuffer();
+
+  const MAX_STATIC_BYTES = 95 * 1024;
+  let accepted = null;
+  let lastSize = 0;
+
+  for (const quality of [85, 75, 65, 55, 45, 35, 25, 18, 12, 8]) {
+    const candidate = await new Sticker(source, {
+      pack: 'el mejor bot',
+      author: 'el mejor bot',
+      type: StickerTypes.DEFAULT,
+      quality
+    }).toBuffer();
+    const inspection = inspectWebpAnimation(candidate);
+    assert.equal(inspection.valid, true, inspection.reason || 'WebP estático inválido');
+    assert.equal(inspection.animated, false, 'una imagen estática no debe convertirse en sticker animado');
+    lastSize = candidate.length;
+    if (lastSize <= MAX_STATIC_BYTES) {
+      accepted = candidate;
+      break;
+    }
+  }
+
+  assert.ok(accepted, 'el sticker estático excede el límite tras 10 niveles de compresión; último tamaño: ' + lastSize);
+  assert.ok(accepted.length <= MAX_STATIC_BYTES);
+});
