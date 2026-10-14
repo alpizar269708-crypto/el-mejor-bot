@@ -529,6 +529,9 @@ async function downloadEncryptedSession(options = {}) {
       validateSessionSnapshot(files);
     } catch (error) {
       invalidSnapshots.push({ filename, branch, message: error.message });
+      // No reintentar la misma copia defectuosa continuamente en este proceso.
+      // Una subida nueva y válida limpia esta lista de bloqueos.
+      rejectedRemoteSessionSources.add(sourceKey);
       return false;
     }
 
@@ -1595,8 +1598,9 @@ async function restartForFreshLogin() {
     authState = null;
     connectionState = 'desconectado';
 
-    try { fs.rmSync(SESSION_DIR, { recursive: true, force: true }); } catch {}
-    fs.mkdirSync(SESSION_DIR, { recursive: true });
+    if (!quarantineLocalSessionDirectory('relink')) {
+      throw new Error('No pude apartar la sesión local anterior sin borrarla; se canceló el nuevo intento de vinculación.');
+    }
 
     // Una vinculación nueva empieza con sesión local limpia,
     // pero NO borramos todavía el respaldo cifrado de GitHub.
