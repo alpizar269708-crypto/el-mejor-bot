@@ -65,45 +65,79 @@ function extraerUrl(texto, plataforma) {
   return null;
 }
 
-async function descargarVideo(url, plataforma) {
+async function descargarArchivos(url, plataforma) {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'social-download-'));
-  const output = path.join(tempDir, 'video.%(ext)s');
+  const output = path.join(tempDir, '%(autonumber)03d.%(ext)s');
+  const opcionesBase = {
+    output,
+    noWarnings: true,
+    noPlaylist: plataforma !== 'instagram',
+    socketTimeout: 30,
+    retries: 3,
+    fragmentRetries: 3,
+    extractorRetries: 2,
+    noPart: true,
+    restrictFilenames: true,
+    maxFilesize: '64M',
+    userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    referer: plataforma === 'instagram'
+      ? 'https://www.instagram.com/'
+      : plataforma === 'x'
+        ? 'https://x.com/'
+        : 'https://www.tiktok.com/'
+  };
+  const opcionesVideo = {
+    ...opcionesBase,
+    format: 'bestvideo[height<=1080][height>=720]+bestaudio/best[height<=1080][height>=720]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/bestvideo+bestaudio/best',
+    mergeOutputFormat: 'mp4'
+  };
+
   try {
-    const opciones = {
-      output,
-      // Prioriza 1080p y 720p, combinando video y audio cuando están separados.
-      // Si la publicación no ofrece HD, baja a la mejor calidad disponible.
-      format: 'bestvideo[height<=1080][height>=720]+bestaudio/best[height<=1080][height>=720]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/bestvideo+bestaudio/best',
-      mergeOutputFormat: 'mp4',
-      noWarnings: true,
-      noPlaylist: true,
-      socketTimeout: 30,
-      retries: 3,
-      fragmentRetries: 3,
-      extractorRetries: 2,
-      noPart: true,
-      restrictFilenames: true,
-      maxFilesize: '64M',
-      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      referer: plataforma === 'instagram'
-        ? 'https://www.instagram.com/'
-        : plataforma === 'x'
-          ? 'https://x.com/'
-          : 'https://www.tiktok.com/'
-    };
-    await youtubedl(url, opciones, { timeout: TIMEOUT_MS });
-    const archivos = await fs.promises.readdir(tempDir);
-    const video = archivos.map(nombre => path.join(tempDir, nombre))
-      .filter(ruta => /\.(?:mp4|m4v|mov|webm)$/i.test(ruta))
-      .sort((a, b) => path.extname(a).toLowerCase() === '.mp4' ? -1 : 1)[0];
-    if (!video) throw new Error('El extractor no generó un archivo de video compatible.');
-    const stat = await fs.promises.stat(video);
-    if (!stat.size || stat.size > MAX_VIDEO_BYTES) {
-      throw new Error(!stat.size ? 'El video descargado está vacío.' : 'El video supera el límite de 64 MB para enviarlo por WhatsApp.');
+    // Primero intentamos la mejor calidad de video. Las publicaciones de Instagram
+    // que son solo fotos no tienen pistas de video; para ellas reintentamos sin
+    // selector de video y descargamos las imágenes/carousel que entregue yt-dlp.
+    try {
+      await youtubedl(url, opcionesVideo, { timeout: TIMEOUT_MS });
+    } catch (errorVideo) {
+      if (plataforma !== 'instagram') throw errorVideo;
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+      await fs.promises.mkdir(tempDir, { recursive: true });
+      await youtubedl(url, opcionesBase, { timeout: TIMEOUT_MS });
     }
-    const buffer = await fs.promises.readFile(video);
-    if (buffer.length < 10000) throw new Error('El archivo descargado no parece ser un video válido.');
-    return buffer;
+
+    let nombres = (await fs.promises.readdir(tempDir))
+      .filter(nombre => /\.(?:mp4|m4v|mov|webm|jpe?g|png|webp|avif)$/i.test(nombre))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+    // Algunos extractores no fallan con el selector de video, pero tampoco
+    // generan archivos (caso típico de publicaciones de solo fotos).
+    if (!nombres.length && plataforma === 'instagram') {
+      await youtubedl(url, opcionesBase, { timeout: TIMEOUT_MS });
+      nombres = (await fs.promises.readdir(tempDir))
+        .filter(nombre => /\.(?:mp4|m4v|mov|webm|jpe?g|png|webp|avif)$/i.test(nombre))
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    }
+
+    if (!nombres.length) throw new Error('Instagram no produjo archivos de imagen o video compatibles.');
+    const archivos = [];
+    for (const nombre of nombres.slice(0, 10)) {
+      const ruta = path.join(tempDir, nombre);
+      const stat = await fs.promises.stat(ruta);
+      if (!stat.size || stat.size > MAX_VIDEO_BYTES) continue;
+      const buffer = await fs.promises.readFile(ruta);
+      if (buffer.length < 1000) continue;
+      const extension = path.extname(nombre).toLowerCase();
+      const esImagen = /\.(?:jpe?g|png|webp|avif)$/i.test(extension);
+      archivos.push({
+        buffer,
+        tipo: esImagen ? 'image' : 'video',
+        mimetype: esImagen
+          ? ({ '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.avif': 'image/avif' }[extension] || 'image/jpeg')
+          : (extension === '.webm' ? 'video/webm' : 'video/mp4')
+      });
+    }
+    if (!archivos.length) throw new Error('Los archivos descargados están vacíos o superan el límite de 64 MB.');
+    return archivos;
   } catch (error) {
     const detalle = String(error?.stderr || error?.message || error).replace(/\s+/g, ' ').trim();
     throw new Error(detalle.slice(0, 650) || 'Falló la descarga.');
@@ -129,12 +163,20 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma) {
 
   try {
     await encolarDescarga(async () => {
-      const video = await descargarVideo(url, plataforma);
-      await sock.sendMessage(chatId, {
-        video,
-        mimetype: 'video/mp4',
-        caption: '✅ Video listo en la mejor calidad disponible.'
-      }, { quoted: msg });
+      const archivos = await descargarArchivos(url, plataforma);
+      for (let i = 0; i < archivos.length; i++) {
+        const archivo = archivos[i];
+        const caption = archivos.length > 1
+          ? '✅ Archivo ' + (i + 1) + ' de ' + archivos.length + ' descargado.'
+          : (archivo.tipo === 'image'
+            ? '✅ Foto de Instagram descargada.'
+            : '✅ Video listo en la mejor calidad disponible.');
+        await sock.sendMessage(chatId, {
+          [archivo.tipo]: archivo.buffer,
+          mimetype: archivo.mimetype,
+          caption
+        }, { quoted: msg });
+      }
       return true;
     });
   } catch (error) {
