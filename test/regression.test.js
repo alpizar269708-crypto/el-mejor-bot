@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { extraerUrl } = require('../descargasSociales');
 const { inspectWebpAnimation } = require('../stickerUtils');
+const { validateSessionSnapshot } = require('../sessionUtils');
 
 function chunk(type, payload) {
   const header = Buffer.alloc(8);
@@ -69,4 +70,35 @@ test('rechaza archivos WebP truncados y cabeceras ajenas', () => {
   assert.equal(inspectWebpAnimation(Buffer.from('GIF89a')).valid, false);
   const bad = webp([chunk('ANIM', Buffer.alloc(6))]).subarray(0, 15);
   assert.equal(inspectWebpAnimation(bad).valid, false);
+});
+
+function b64(value) {
+  return Buffer.from(JSON.stringify(value), 'utf8').toString('base64');
+}
+
+test('acepta una sesión completa y registrada', () => {
+  const files = {
+    'creds.json': b64({ registered: true, noiseKey: { public: 'test' } }),
+    'app-state-sync-key-1.json': b64({ keyData: 'test' })
+  };
+  assert.equal(validateSessionSnapshot(files).registered, true);
+});
+
+test('rechaza credenciales no registradas y credenciales JSON corruptas', () => {
+  assert.throws(
+    () => validateSessionSnapshot({ 'creds.json': b64({ registered: false }) }),
+    /no marcó las credenciales como registradas/
+  );
+  assert.throws(
+    () => validateSessionSnapshot({ 'creds.json': Buffer.from('{invalid').toString('base64') }),
+    /corrupto/
+  );
+});
+
+test('rechaza rutas de restauración que intentan salir de la carpeta de sesión', () => {
+  const files = {
+    '../outside.json': b64({ data: true }),
+    'creds.json': b64({ registered: true })
+  };
+  assert.throws(() => validateSessionSnapshot(files), /ruta de archivo inválida/);
 });
