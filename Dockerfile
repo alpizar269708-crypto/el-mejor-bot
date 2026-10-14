@@ -1,7 +1,6 @@
 FROM node:24-bookworm-slim
 
 ENV NODE_ENV=production \
-    YOUTUBE_DL_HOST=https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux \
     GALLERY_DL_PATH=/opt/gallery-dl/bin/gallery-dl
 
 WORKDIR /app
@@ -11,7 +10,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package.json ./
-RUN npm install --omit=dev --no-audit --no-fund \
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) export YOUTUBE_DL_HOST=https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux ;; \
+      arm64) export YOUTUBE_DL_HOST=https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux_aarch64 ;; \
+      *) echo "Arquitectura no compatible con el binario de yt-dlp" >&2; exit 1 ;; \
+    esac \
+    && npm install --omit=dev --no-audit --no-fund \
     && python3 -m venv /opt/gallery-dl \
     && /opt/gallery-dl/bin/python -m pip install --disable-pip-version-check --no-cache-dir gallery-dl==1.32.16
 
