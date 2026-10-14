@@ -1088,15 +1088,16 @@ async function handleMessage(update) {
   if (/^(menu|ayuda|help)$/i.test(text)) {
     return sendText(
       message.key.remoteJid,
-      '🤖 *el mejor bot*\n\n📸 Imagen + *sticker*\n🎥 Video + *sticker*\n⬇️ *tiktok enlace* o *instagram enlace* para descargar videos públicos.\n↩️ También puedes responder una imagen o video con *sticker*.',
+      '🤖 *el mejor bot*\n\n📸 Imagen + *sticker*\n🎥 Video + *sticker*\n⬇️ *tiktok enlace*, *instagram enlace* o *x enlace* para descargar videos públicos.\n↩️ También puedes responder una imagen o video con *sticker*.',
       message
     );
   }
 
-  const socialMatch = text.trim().match(/^(tiktok|instagram)\b/i);
+  const socialMatch = text.trim().match(/^(tiktok|instagram|x|twitter)\b/i);
   if (socialMatch) {
-    const plataforma = socialMatch[1].toLowerCase();
-    const argumentos = text.trim().replace(/^(tiktok|instagram)\b/i, '').trim();
+    const comando = socialMatch[1].toLowerCase();
+    const plataforma = comando === 'twitter' ? 'x' : comando;
+    const argumentos = text.trim().replace(/^(tiktok|instagram|x|twitter)\b/i, '').trim();
     return comandoDescargaSocial(sock, message.key.remoteJid, message, argumentos, plataforma);
   }
 
