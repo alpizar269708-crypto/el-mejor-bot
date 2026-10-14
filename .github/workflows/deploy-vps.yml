@@ -49,13 +49,13 @@ jobs:
           set -eu
           ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes "$VPS_USER@$VPS_HOST" 'set -eu
             APP_DIR="$HOME/el-mejor-bot"
-            if [ ! -f "$APP_DIR/.env" ]; then
-              echo "Falta $APP_DIR/.env. Créalo con las variables del archivo .env.example antes del primer despliegue." >&2
-              exit 1
-            fi
             if [ ! -d "$APP_DIR/.git" ]; then
               mkdir -p "$APP_DIR"
               git clone https://github.com/alpizar269708-crypto/el-mejor-bot.git "$APP_DIR"
+            fi
+            if [ ! -f "$APP_DIR/.env" ]; then
+              echo "Falta $APP_DIR/.env. Créalo con las variables del archivo .env.example antes del primer despliegue." >&2
+              exit 1
             fi
             cd "$APP_DIR"
             git fetch origin main
