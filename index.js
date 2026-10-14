@@ -1839,6 +1839,26 @@ async function startSocketInternal(restoreSession = true) {
       console.log('✅ el mejor bot conectado');
       console.log('🟢 WhatsApp conectado:', lastConnectedAt);
 
+      // Si el socket abrió, la sesión está autenticada. Algunas vinculaciones
+      // dejan registered=false en el archivo local hasta el siguiente creds.update;
+      // normalizarlo aquí y persistirlo antes de subir el snapshot cifrado.
+      if (socketAuthState?.state?.creds && socketAuthState.state.creds.registered !== true) {
+        const persistConnectedCredentials = sessionIoTail.then(async () => {
+          if (shuttingDown || myGeneration !== socketGeneration || sock !== newSock) return;
+          socketAuthState.state.creds.registered = true;
+          await socketAuthState.saveCreds();
+          console.log('🔐 Credenciales marcadas como registradas tras conexión autenticada.');
+        });
+        pendingCredentialWrites.add(persistConnectedCredentials);
+        sessionIoTail = persistConnectedCredentials.catch(error => {
+          console.error('❌ No se pudieron normalizar las credenciales tras conectar:', error.message);
+        });
+        persistConnectedCredentials.then(
+          () => pendingCredentialWrites.delete(persistConnectedCredentials),
+          () => pendingCredentialWrites.delete(persistConnectedCredentials)
+        );
+      }
+
       clearTimeout(uploadTimer);
       clearTimeout(sessionRestoreRetryTimer);
       sessionRestoreRetryTimer = null;
@@ -2180,6 +2200,15 @@ app.get('/health', async (_req, res) => {
     whatsapp: connectionState === 'conectado',
     uptime: Math.round(process.uptime()),
     sessionLocal: fs.existsSync(path.join(SESSION_DIR, 'creds.json')),
+    credencialesRegistradasMemoria: authState?.state?.creds?.registered === true,
+    credencialesRegistradasDisco: (() => {
+      try {
+        const diskCreds = JSON.parse(fs.readFileSync(path.join(SESSION_DIR, 'creds.json'), 'utf8'));
+        return diskCreds?.registered === true;
+      } catch {
+        return false;
+      }
+    })(),
     githubSession,
     githubReadStatus,
     respaldoUltimaSesion: LAST_GOOD_SESSION_FILE,
