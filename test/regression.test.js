@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extraerUrl } = require('../descargasSociales');
+const { extraerUrl, detectarPlataforma, MAX_MEDIA_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
 const { inspectWebpAnimation } = require('../stickerUtils');
 const { validateSessionSnapshot } = require('../sessionUtils');
 
@@ -58,6 +58,21 @@ test('rechaza esquemas y hosts locales no admitidos', () => {
   assert.equal(extraerUrl('http://localhost/secret.mp4', 'auto'), null);
   assert.equal(extraerUrl('http://127.0.0.1/private.mp4', 'auto'), null);
   assert.equal(extraerUrl('http://[::1]/private.mp4', 'auto'), null);
+});
+
+test('acepta enlaces de YouTube y detecta la plataforma correcta', () => {
+  assert.equal(
+    extraerUrl('https://youtu.be/abc123', 'youtube'),
+    'https://youtu.be/abc123'
+  );
+  assert.equal(detectarPlataforma('https://www.youtube.com/watch?v=abc123'), 'youtube');
+  assert.equal(detectarPlataforma('https://cdn.example.org/video.mp4'), null);
+});
+
+test('mantiene el límite de 100 MB y el timeout ampliado para videos largos', () => {
+  assert.equal(MAX_MEDIA_BYTES, 100 * 1024 * 1024);
+  assert.equal(TIMEOUT_MS, 30 * 60 * 1000);
+  assert.equal(MAX_MEDIA_FILES, 10);
 });
 
 test('rechaza dominios parecidos pero no auténticos', () => {
