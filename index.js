@@ -1088,7 +1088,7 @@ async function handleMessage(update) {
   if (/^(menu|ayuda|help)$/i.test(text)) {
     return sendText(
       message.key.remoteJid,
-      '🤖 *el mejor bot*\n\n📸 Imagen + *sticker*\n🎥 Video + *sticker*\n↩️ También puedes responder una imagen o video con *sticker*.',
+      '🤖 *el mejor bot*\n\n📸 Imagen + *sticker*\n🎥 Video + *sticker*\n⬇️ *tiktok enlace* o *instagram enlace* para descargar videos públicos.\n↩️ También puedes responder una imagen o video con *sticker*.',
       message
     );
   }
