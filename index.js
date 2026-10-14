@@ -1672,6 +1672,18 @@ async function startSocket(restoreSession = true) {
   startSocketPromise = started;
   try {
     return await started;
+  } catch (error) {
+    // Si la inicialización falla después de crear el socket, no dejar una
+    // referencia obsoleta en estado "conectando": bloquearía todos los reintentos.
+    if (startSocketPromise === started && connectionState === 'conectando') {
+      const failedSocket = sock;
+      sock = null;
+      authState = null;
+      connectionState = 'desconectado';
+      try { failedSocket?.ev?.removeAllListeners(); } catch {}
+      try { failedSocket?.ws?.close(); } catch {}
+    }
+    throw error;
   } finally {
     if (startSocketPromise === started) startSocketPromise = null;
   }
@@ -2156,7 +2168,10 @@ app.get('/health', async (_req, res) => {
     ultimoCodigoDesconexion: lastDisconnectCode,
     ultimoMotivoDesconexion: lastDisconnectReason,
     intentosReconectar: reconnectAttempts,
-    fallosSesionRestaurada: sessionRecoveryFailures
+    fallosSesionRestaurada: sessionRecoveryFailures,
+    stickersPendientes: stickerQueue.length,
+    memoriaProcesoMB: Math.round(process.memoryUsage().rss / 1024 / 1024),
+    heapUsadoMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
   });
 });
 
