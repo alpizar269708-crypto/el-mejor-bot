@@ -14,6 +14,10 @@ const youtubedl = youtubeDlExec;
 // WhatsApp documenta un límite de vídeo de 100 MB; usar MB decimales evita
 // que un archivo de 100 MiB rebase el límite real del cliente.
 const MAX_MEDIA_BYTES = 100_000_000;
+// Entregar medios grandes como documentos evita límites variables de envío
+// multimedia según el cliente/conexión y conserva el archivo original.
+const MAX_INLINE_IMAGE_BYTES = 16_000_000;
+const MAX_INLINE_VIDEO_BYTES = 64_000_000;
 const TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_COLA_DESCARGAS = 100;
 const MAX_MEDIA_FILES = 10;
@@ -552,6 +556,18 @@ async function descargarArchivos(url, plataforma = 'auto') {
   }
 }
 
+function tipoEnvioWhatsApp(archivo) {
+  const size = Number(archivo?.size || 0);
+
+  if (archivo?.tipo === 'image') {
+    return size > MAX_INLINE_IMAGE_BYTES ? 'document' : 'image';
+  }
+  if (archivo?.tipo === 'video') {
+    return size > MAX_INLINE_VIDEO_BYTES ? 'document' : 'video';
+  }
+  return 'document';
+}
+
 function nombrePlataforma(plataforma) {
   return {
     tiktok: 'TikTok',
@@ -601,10 +617,14 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma = 'aut
             : (archivo.tipo === 'image'
               ? '✅ Imagen descargada.'
               : archivo.tipo === 'video'
-                ? '✅ Video listo para enviar.'
-                : '✅ Archivo descargado.');
+                ? (mediaKey === 'document'
+                  ? '✅ Video descargado; se envía como documento para evitar límites de multimedia.'
+                  : '✅ Video listo para enviar.')
+                : (mediaKey === 'document' && archivo.tipo === 'image'
+                  ? '✅ Imagen descargada; se envía como documento para conservar el archivo original.'
+                  : '✅ Archivo descargado.'));
 
-          const mediaKey = archivo.tipo === 'image' ? 'image' : archivo.tipo === 'video' ? 'video' : 'document';
+          const mediaKey = tipoEnvioWhatsApp(archivo);
           const media = { url: archivo.path };
           const payload = {
             [mediaKey]: media,
@@ -642,6 +662,9 @@ module.exports = {
   MAX_MEDIA_BYTES,
   TIMEOUT_MS,
   MAX_MEDIA_FILES,
+  MAX_INLINE_IMAGE_BYTES,
+  MAX_INLINE_VIDEO_BYTES,
+  tipoEnvioWhatsApp,
   comandoDescargaSocial,
   descargarArchivos,
   extraerUrl,
