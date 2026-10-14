@@ -1,22 +1,59 @@
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
+'use strict';
+
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const net = require('node:net');
+const { Readable, Transform } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
 const youtubeDlExec = require('youtube-dl-exec');
+const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
 
 const youtubedl = youtubeDlExec;
-const MAX_VIDEO_BYTES = 64 * 1024 * 1024;
-const TIMEOUT_MS = 120000;
+const MAX_MEDIA_BYTES = 100 * 1024 * 1024;
+const TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_COLA_DESCARGAS = 100;
+const MAX_MEDIA_FILES = 10;
 const colaDescargas = [];
 let descargaActiva = false;
 let trabajoActivoDesde = null;
+
+const IMAGE_MIME_EXT = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
+  'image/gif': '.gif',
+  'image/avif': '.avif',
+  'image/bmp': '.bmp'
+};
+const VIDEO_MIME_EXT = {
+  'video/mp4': '.mp4',
+  'video/webm': '.webm',
+  'video/quicktime': '.mov',
+  'video/3gpp': '.3gp',
+  'video/x-matroska': '.mkv',
+  'video/x-msvideo': '.avi',
+  'video/mpeg': '.mpeg',
+  'video/x-flv': '.flv',
+  'video/mp2t': '.ts'
+};
+const DIRECT_MEDIA_EXTENSIONS = new Set([
+  '.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif', '.bmp',
+  '.mp4', '.m4v', '.mov', '.webm', '.mkv', '.avi', '.3gp',
+  '.mpeg', '.mpg', '.flv', '.ts'
+]);
+const YTDLP_MEDIA_EXTENSIONS = /\.(?:mp4|m4v|mov|webm|mkv|avi|3gp|mpeg|mpg|flv|ts|jpe?g|png|webp|avif|gif|bmp)$/i;
+
 function encolarDescarga(trabajo) {
-  if (colaDescargas.length >= MAX_COLA_DESCARGAS) throw new Error('La cola está llena por ahora. Intenta de nuevo en unos minutos.');
+  if (colaDescargas.length >= MAX_COLA_DESCARGAS) {
+    throw new Error('La cola está llena por ahora. Intenta de nuevo en unos minutos.');
+  }
   return new Promise((resolve, reject) => {
     colaDescargas.push({ trabajo, resolve, reject });
     procesarColaDescargas().catch(error => console.error('Cola de descargas:', error.message));
   });
 }
+
 async function procesarColaDescargas() {
   if (descargaActiva) return;
   descargaActiva = true;
@@ -24,194 +61,475 @@ async function procesarColaDescargas() {
     while (colaDescargas.length) {
       const job = colaDescargas.shift();
       trabajoActivoDesde = Date.now();
-      try { job.resolve(await job.trabajo()); } catch (error) { job.reject(error); }
-      finally { trabajoActivoDesde = null; }
+      try {
+        job.resolve(await job.trabajo());
+      } catch (error) {
+        job.reject(error);
+      } finally {
+        trabajoActivoDesde = null;
+      }
     }
   } finally {
     descargaActiva = false;
     if (colaDescargas.length) procesarColaDescargas().catch(() => {});
   }
 }
-function liberarColaDescargas() {
-  const pendientes = colaDescargas.splice(0);
-  for (const job of pendientes) job.reject(new Error('Solicitud cancelada por liberarcache.'));
-  if (typeof global.gc === 'function') { try { global.gc(); } catch (_) {} }
-  return { pendientesCancelados: pendientes.length, descargaActiva,
-    segundosActiva: trabajoActivoDesde ? Math.floor((Date.now() - trabajoActivoDesde) / 1000) : 0,
-    recoleccionForzadaDisponible: typeof global.gc === 'function' };
+
+function esIpPrivada(ip) {
+  if (net.isIPv4(ip)) {
+    const [a, b, c] = ip.split('.').map(Number);
+    return a === 0 || a === 10 || a === 127 || a >= 224 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 192 && b === 0 && c === 0) ||
+      (a === 198 && (b === 18 || b === 19));
+  }
+  if (net.isIPv6(ip)) {
+    const normalized = ip.toLowerCase();
+    return normalized === '::' || normalized === '::1' ||
+      normalized.startsWith('fc') || normalized.startsWith('fd') ||
+      normalized.startsWith('fe8') || normalized.startsWith('fe9') ||
+      normalized.startsWith('fea') || normalized.startsWith('feb') ||
+      normalized.startsWith('::ffff:');
+  }
+  return false;
 }
 
-function extraerUrl(texto, plataforma) {
-  const patrones = {
-    tiktok: /(?:^|\.)(?:tiktok\.com)$/i,
-    instagram: /(?:^|\.)instagram\.com$/i,
-    x: /(?:^|\.)(?:x\.com|twitter\.com|t\.co)$/i,
-    pinterest: /(?:^|\.)(?:pinterest\.[a-z.]+|pin\.it)$/i,
-    facebook: /(?:^|\.)(?:facebook\.com|fb\.watch|fb\.com)$/i,
-    reddit: /(?:^|\.)(?:reddit\.com|redd\.it)$/i,
-    threads: /(?:^|\.)threads\.net$/i
-  };
-  const patron = patrones[plataforma];
-  if (!patron) return null;
-  const coincidencias = String(texto || '').match(/https?:\/\/[^\s<>]+|(?:www\.)?[a-z0-9.-]+\.[a-z]{2,}(?:\/[^\s<>]*)?/gi) || [];
-  for (let valor of coincidencias) {
-    valor = valor.replace(/[),.;!?]+$/g, '');
-    if (!/^https?:\/\//i.test(valor)) valor = 'https://' + valor;
-    try {
-      const url = new URL(valor);
-      const host = url.hostname.toLowerCase().replace(/^www\./, '');
-      const valido = plataforma === 'tiktok'
-        ? /(^|\.)tiktok\.com$/.test(host)
-        : plataforma === 'instagram'
-          ? /(^|\.)instagram\.com$/.test(host)
-          : plataforma === 'x'
-            ? /(^|\.)(?:x\.com|twitter\.com|t\.co)$/.test(host)
-            : plataforma === 'pinterest'
-              ? /(^|\.)(?:pinterest\.[a-z.]+|pin\.it)$/.test(host)
-              : plataforma === 'facebook'
-                ? /(^|\.)(?:facebook\.com|fb\.watch|fb\.com)$/.test(host)
-                : plataforma === 'reddit'
-                  ? /(^|\.)(?:reddit\.com|redd\.it)$/.test(host)
-                  : plataforma === 'threads'
-                    ? /(^|\.)threads\.net$/.test(host)
-                    : patron.test(host);
-      if (valido) return url.toString();
-    } catch (_) {}
+function normalizarUrl(valor) {
+  let candidate = String(valor || '').trim().replace(/[),.;!?]+$/g, '');
+  if (!candidate) return null;
+  if (!/^https?:\/\//i.test(candidate)) candidate = 'https://' + candidate;
+
+  try {
+    const url = new URL(candidate);
+    const host = url.hostname.toLowerCase().replace(/\.$/, '');
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    if (!host || url.username || url.password) return null;
+    if (
+      host === 'localhost' ||
+      host.endsWith('.localhost') ||
+      host.endsWith('.local') ||
+      host.endsWith('.internal') ||
+      host === 'metadata.google.internal' ||
+      host === 'metadata' ||
+      host.endsWith('.onion') ||
+      net.isIP(host) && esIpPrivada(host)
+    ) return null;
+
+    url.hash = '';
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function extraerCoincidencias(texto) {
+  return String(texto || '').match(
+    /https?:\/\/[^\s<>]+|(?:www\.)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?::\d{1,5})?(?:\/[^\s<>]*)?/gi
+  ) || [];
+}
+
+function detectarPlataforma(urlInput) {
+  const url = urlInput instanceof URL ? urlInput : normalizarUrl(urlInput);
+  if (!url) return null;
+  const host = url.hostname.toLowerCase().replace(/^www\./, '');
+
+  if (host === 'tiktok.com' || host.endsWith('.tiktok.com')) return 'tiktok';
+  if (host === 'instagram.com' || host.endsWith('.instagram.com')) return 'instagram';
+  if (['x.com', 'twitter.com', 't.co'].includes(host) || host.endsWith('.x.com') || host.endsWith('.twitter.com')) return 'x';
+  if (host === 'pinterest.com' || host.endsWith('.pinterest.com') || /^pinterest\.[a-z]{2,3}(?:\.[a-z]{2})?$/.test(host) || host === 'pin.it') return 'pinterest';
+  if (['facebook.com', 'fb.watch', 'fb.com'].includes(host) || host.endsWith('.facebook.com')) return 'facebook';
+  if (host === 'reddit.com' || host.endsWith('.reddit.com') || host === 'redd.it') return 'reddit';
+  if (host === 'threads.net' || host.endsWith('.threads.net')) return 'threads';
+  if (host === 'youtube.com' || host.endsWith('.youtube.com') || host === 'youtu.be' || host === 'youtube-nocookie.com' || host.endsWith('.youtube-nocookie.com')) return 'youtube';
+  return null;
+}
+
+function extraerUrl(texto, plataforma = 'auto') {
+  const coincidencias = extraerCoincidencias(texto);
+  for (const coincidencia of coincidencias) {
+    const url = normalizarUrl(coincidencia);
+    if (!url) continue;
+
+    if (plataforma === 'auto') return url.toString();
+    const detectada = detectarPlataforma(url);
+    if (detectada === plataforma || (plataforma === 'x' && detectada === 'x')) {
+      return url.toString();
+    }
   }
   return null;
 }
-async function descargarArchivos(url, plataforma) {
+
+function limpiarDirectorio(ruta) {
+  return fs.promises.rm(ruta, { recursive: true, force: true });
+}
+
+function esImagenExtension(extension) {
+  return /\.(?:jpe?g|png|webp|avif|gif|bmp)$/i.test(extension);
+}
+
+function tipoMimetype(extension, mime = '') {
+  const normalizedMime = String(mime || '').split(';')[0].trim().toLowerCase();
+  if (esImagenExtension(extension) || normalizedMime.startsWith('image/')) return 'image';
+  if (/^(?:mp4|m4v|mov|webm|3gp)$/i.test(String(extension).replace(/^\./, '')) || normalizedMime.startsWith('video/')) return 'video';
+  return 'document';
+}
+
+async function descargaDirecta(urlInicial, tempDir, index = 1) {
+  let url = normalizarUrl(urlInicial);
+  if (!url) throw new Error('El enlace debe ser una URL HTTP/HTTPS pública válida.');
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  let response = null;
+  let destino = null;
+
+  try {
+    for (let redirect = 0; redirect <= 5; redirect++) {
+      const current = normalizarUrl(url.toString());
+      if (!current) throw new Error('El servidor intentó redirigir a una dirección no permitida.');
+
+      response = await fetch(current, {
+        redirect: 'manual',
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
+          Accept: 'video/*,image/*,application/octet-stream;q=0.9,*/*;q=0.5'
+        }
+      });
+
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get('location');
+        if (!location || redirect === 5) throw new Error('Demasiadas redirecciones al descargar el archivo.');
+        url = new URL(location, current);
+        await response.body?.cancel().catch(() => {});
+        continue;
+      }
+      break;
+    }
+
+    if (!response?.ok) {
+      throw new Error('El servidor del enlace respondió HTTP ' + (response?.status ?? 'sin respuesta') + '.');
+    }
+
+    const contentType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    const contentLength = Number(response.headers.get('content-length') || 0);
+    const extensionUrl = path.extname(url.pathname).toLowerCase();
+    const allowedByExtension = DIRECT_MEDIA_EXTENSIONS.has(extensionUrl);
+    const extensionByMime = IMAGE_MIME_EXT[contentType] || VIDEO_MIME_EXT[contentType];
+    if (!contentType.startsWith('image/') && !contentType.startsWith('video/') && !allowedByExtension) {
+      throw new Error('El enlace directo no respondió una imagen o video reconocible (tipo ' + (contentType || 'desconocido') + ').');
+    }
+    if (contentLength > MAX_MEDIA_BYTES) {
+      throw new Error('El archivo supera el límite de descarga de 100 MB.');
+    }
+    if (!response.body) throw new Error('El servidor no entregó contenido descargable.');
+
+    const extension = allowedByExtension ? extensionUrl : (extensionByMime || '');
+    if (!extension) throw new Error('El servidor no indicó un formato de imagen o video compatible.');
+
+    destino = path.join(tempDir, String(index).padStart(3, '0') + '-direct' + extension);
+    let receivedBytes = 0;
+    const sizeLimiter = new Transform({
+      transform(chunk, _encoding, callback) {
+        receivedBytes += chunk.length;
+        if (receivedBytes > MAX_MEDIA_BYTES) {
+          callback(new Error('El archivo superó el límite de descarga de 100 MB.'));
+          return;
+        }
+        callback(null, chunk);
+      }
+    });
+
+    await pipeline(
+      Readable.fromWeb(response.body),
+      sizeLimiter,
+      fs.createWriteStream(destino, { flags: 'wx' }),
+      { signal: controller.signal }
+    );
+
+    if (receivedBytes === 0) throw new Error('El servidor devolvió un archivo vacío.');
+    const stat = await fs.promises.stat(destino);
+    if (!stat.size || stat.size > MAX_MEDIA_BYTES) throw new Error('El archivo vacío o supera los 100 MB.');
+
+    const mime = contentType || (
+      IMAGE_MIME_EXT[extension] ? extension : null
+    );
+    return {
+      path: destino,
+      nombre: path.basename(destino),
+      tipo: tipoMimetype(extension, mime),
+      mimetype: contentType || (
+        extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg' :
+        extension === '.png' ? 'image/png' :
+        extension === '.webp' ? 'image/webp' :
+        extension === '.gif' ? 'image/gif' :
+        extension === '.avif' ? 'image/avif' :
+        extension === '.bmp' ? 'image/bmp' :
+        extension === '.mp4' || extension === '.m4v' ? 'video/mp4' :
+        extension === '.mov' ? 'video/quicktime' :
+        extension === '.webm' ? 'video/webm' :
+        extension === '.3gp' ? 'video/3gpp' :
+        extension === '.mkv' ? 'video/x-matroska' :
+        extension === '.avi' ? 'video/x-msvideo' :
+        extension === '.mpeg' || extension === '.mpg' ? 'video/mpeg' :
+        extension === '.flv' ? 'video/x-flv' : 'application/octet-stream'
+      ),
+      size: stat.size
+    };
+  } catch (error) {
+    if (destino) await fs.promises.rm(destino, { force: true }).catch(() => {});
+    if (controller.signal.aborted) throw new Error('La descarga directa superó el límite de 30 minutos.');
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    await response?.body?.cancel().catch(() => {});
+  }
+}
+
+async function listarArchivosMedia(tempDir) {
+  const nombres = (await fs.promises.readdir(tempDir))
+    .filter(nombre => YTDLP_MEDIA_EXTENSIONS.test(nombre))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+  const archivos = [];
+  for (const nombre of nombres.slice(0, MAX_MEDIA_FILES)) {
+    const ruta = path.join(tempDir, nombre);
+    const stat = await fs.promises.stat(ruta);
+    if (!stat.isFile() || !stat.size) continue;
+    if (stat.size > MAX_MEDIA_BYTES) continue;
+
+    const extension = path.extname(nombre).toLowerCase();
+    const isImage = esImagenExtension(extension);
+    const mime = isImage
+      ? (extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg' : 'image/' + extension.slice(1))
+      : (extension === '.webm' ? 'video/webm' :
+        extension === '.mov' ? 'video/quicktime' :
+        extension === '.3gp' ? 'video/3gpp' :
+        extension === '.mkv' ? 'video/x-matroska' :
+        extension === '.avi' ? 'video/x-msvideo' :
+        extension === '.mpeg' || extension === '.mpg' ? 'video/mpeg' :
+        extension === '.flv' ? 'video/x-flv' : 'video/mp4');
+
+    archivos.push({
+      path: ruta,
+      nombre,
+      tipo: tipoMimetype(extension, mime),
+      mimetype: mime,
+      size: stat.size
+    });
+  }
+  return archivos;
+}
+
+async function descargarArchivos(url, plataforma = 'auto') {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'social-download-'));
   const output = path.join(tempDir, '%(autonumber)03d.%(ext)s');
+  let completed = false;
+
   const opcionesBase = {
     output,
     noWarnings: true,
-    // youtube-dl-exec convierte `noPlaylist: false` en la opción inválida --no-no-playlist.
-    // Para Instagram/TikTok/Pinterest omitimos la opción y permitimos carruseles.
     ...(!['instagram', 'pinterest', 'tiktok'].includes(plataforma) ? { noPlaylist: true } : {}),
-    playlistEnd: 10,
-    maxDownloads: 10,
-    socketTimeout: 30,
-    retries: 3,
-    fragmentRetries: 3,
-    extractorRetries: 2,
+    playlistEnd: MAX_MEDIA_FILES,
+    maxDownloads: MAX_MEDIA_FILES,
+    socketTimeout: 60,
+    retries: 5,
+    fragmentRetries: 5,
+    extractorRetries: 3,
     noPart: true,
     restrictFilenames: true,
-    maxFilesize: '64M',
+    maxFilesize: '100M',
+    ffmpegLocation: ffmpegInstaller.path,
     userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     referer: ({
       instagram: 'https://www.instagram.com/',
       x: 'https://x.com/',
+      twitter: 'https://x.com/',
+      youtube: 'https://www.youtube.com/',
       pinterest: 'https://www.pinterest.com/',
       facebook: 'https://www.facebook.com/',
       reddit: 'https://www.reddit.com/',
       threads: 'https://www.threads.net/'
-    })[plataforma] || 'https://www.tiktok.com/'
+    })[plataforma] || undefined
   };
   const opcionesVideo = {
     ...opcionesBase,
-    format: 'bestvideo[height<=1080][height>=720]+bestaudio/best[height<=1080][height>=720]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/bestvideo+bestaudio/best',
+    format: 'bestvideo[height<=1080]+bestaudio/best[height<=1080]/bestvideo+bestaudio/best',
     mergeOutputFormat: 'mp4'
   };
 
   try {
-    // Primero intentamos la mejor calidad de video. Si el enlace es una publicación
-    // de fotos/carrusel, reintentamos sin selector de video para recuperar imágenes.
+    const parsed = normalizarUrl(url);
+    if (!parsed) throw new Error('El enlace debe ser una URL HTTP/HTTPS pública válida.');
+
+    // Los enlaces directos a archivos multimedia no necesitan un extractor;
+    // transmitirlos a disco mantiene baja la RAM aunque sean videos grandes.
+    if (DIRECT_MEDIA_EXTENSIONS.has(path.extname(parsed.pathname).toLowerCase())) {
+      try {
+        const directFile = await descargaDirecta(parsed.toString(), tempDir, 1);
+        completed = true;
+        return {
+          archivos: [directFile],
+          cleanup: () => limpiarDirectorio(tempDir)
+        };
+      } catch (directError) {
+        console.warn('⚠️ Descarga directa no disponible; se probará yt-dlp:', directError.message);
+        await limpiarDirectorio(tempDir);
+        await fs.promises.mkdir(tempDir, { recursive: true });
+      }
+    }
+
+    let errorVideo = null;
     try {
-      await youtubedl(url, opcionesVideo, { timeout: TIMEOUT_MS });
-    } catch (errorVideo) {
-      if (!['instagram', 'tiktok', 'pinterest', 'facebook', 'reddit', 'threads', 'x'].includes(plataforma)) throw errorVideo;
-      await fs.promises.rm(tempDir, { recursive: true, force: true });
+      await youtubedl(parsed.toString(), opcionesVideo, { timeout: TIMEOUT_MS });
+    } catch (error) {
+      errorVideo = error;
+      await limpiarDirectorio(tempDir);
       await fs.promises.mkdir(tempDir, { recursive: true });
-      await youtubedl(url, opcionesBase, { timeout: TIMEOUT_MS });
     }
 
-    let nombres = (await fs.promises.readdir(tempDir))
-      .filter(nombre => /\.(?:mp4|m4v|mov|webm|jpe?g|png|webp|avif)$/i.test(nombre))
-      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    let archivos = await listarArchivosMedia(tempDir);
 
-    // Algunos extractores no fallan con el selector de video, pero tampoco
-    // generan archivos (caso típico de publicaciones de solo fotos).
-    if (!nombres.length && ['instagram', 'tiktok', 'pinterest', 'facebook', 'reddit', 'threads', 'x'].includes(plataforma)) {
-      await youtubedl(url, opcionesBase, { timeout: TIMEOUT_MS });
-      nombres = (await fs.promises.readdir(tempDir))
-        .filter(nombre => /\.(?:mp4|m4v|mov|webm|jpe?g|png|webp|avif)$/i.test(nombre))
-        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    // Un extractor puede identificar el post pero no ofrecer la selección de
+    // video deseada (o devolver un carrusel de imágenes); reintentar sin format.
+    if (!archivos.length) {
+      try {
+        await youtubedl(parsed.toString(), opcionesBase, { timeout: TIMEOUT_MS });
+      } catch (errorBase) {
+        errorVideo = errorBase || errorVideo;
+      }
+      archivos = await listarArchivosMedia(tempDir);
     }
 
-    if (!nombres.length) throw new Error(nombrePlataforma(plataforma) + ' no produjo archivos de imagen o video compatibles.');
-    const archivos = [];
-    for (const nombre of nombres.slice(0, 10)) {
-      const ruta = path.join(tempDir, nombre);
-      const stat = await fs.promises.stat(ruta);
-      if (!stat.size || stat.size > MAX_VIDEO_BYTES) continue;
-      const buffer = await fs.promises.readFile(ruta);
-      if (buffer.length === 0) continue;
-      const extension = path.extname(nombre).toLowerCase();
-      const esImagen = /\.(?:jpe?g|png|webp|avif)$/i.test(extension);
-      archivos.push({
-        buffer,
-        tipo: esImagen ? 'image' : 'video',
-        mimetype: esImagen
-          ? ({ '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.avif': 'image/avif' }[extension] || 'image/jpeg')
-          : (extension === '.webm' ? 'video/webm' : 'video/mp4')
-      });
+    // Fallback de URL directa: permite enlaces genéricos que respondan image/*
+    // o video/* aunque yt-dlp no tenga un extractor específico para ese host.
+    if (!archivos.length) {
+      await limpiarDirectorio(tempDir);
+      await fs.promises.mkdir(tempDir, { recursive: true });
+      try {
+        const directFile = await descargaDirecta(parsed.toString(), tempDir, 1);
+        archivos = [directFile];
+      } catch (directError) {
+        if (errorVideo) {
+          const detail = String(errorVideo?.stderr || errorVideo?.message || errorVideo).replace(/\s+/g, ' ').trim();
+          throw new Error(detail.slice(0, 500) + ' | Enlace directo: ' + directError.message.slice(0, 250));
+        }
+        throw directError;
+      }
     }
-    if (!archivos.length) throw new Error('Los archivos descargados están vacíos o superan el límite de 64 MB.');
-    return archivos;
+
+    if (!archivos.length) {
+      throw new Error('El enlace no produjo archivos de imagen o video compatibles.');
+    }
+
+    const accepted = [];
+    const oversized = [];
+    for (const archivo of archivos) {
+      if (archivo.size > MAX_MEDIA_BYTES) oversized.push(archivo.nombre);
+      else accepted.push(archivo);
+    }
+    if (!accepted.length) {
+      throw new Error('Los archivos descargados superan el límite de 100 MB por archivo.');
+    }
+
+    completed = true;
+    return {
+      archivos: accepted,
+      omittedOversized: oversized.length,
+      cleanup: () => limpiarDirectorio(tempDir)
+    };
   } catch (error) {
-    const detalle = String(error?.stderr || error?.message || error).replace(/\s+/g, ' ').trim();
-    throw new Error(detalle.slice(0, 650) || 'Falló la descarga.');
+    const detail = String(error?.stderr || error?.message || error).replace(/\s+/g, ' ').trim();
+    throw new Error(detail.slice(0, 700) || 'Falló la descarga.');
   } finally {
-    await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    if (!completed) await limpiarDirectorio(tempDir).catch(() => {});
   }
 }
 
 function nombrePlataforma(plataforma) {
-  return { tiktok: 'TikTok', instagram: 'Instagram', x: 'X', pinterest: 'Pinterest', facebook: 'Facebook', reddit: 'Reddit', threads: 'Threads' }[plataforma] || plataforma;
+  return {
+    tiktok: 'TikTok',
+    instagram: 'Instagram',
+    x: 'X',
+    twitter: 'X',
+    youtube: 'YouTube',
+    pinterest: 'Pinterest',
+    facebook: 'Facebook',
+    reddit: 'Reddit',
+    threads: 'Threads',
+    auto: 'este enlace'
+  }[plataforma] || plataforma;
 }
 
-async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma) {
-  const url = extraerUrl(texto, plataforma);
+function detectarTipoPorUrl(url) {
+  return detectarPlataforma(url) || 'auto';
+}
+
+async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma = 'auto') {
+  const url = extraerUrl(Array.isArray(texto) ? texto.join(' ') : texto, plataforma);
   const nombre = nombrePlataforma(plataforma);
   if (!url) {
     await sock.sendMessage(chatId, {
-      text: '⚠️ Envíame un enlace público válido de ' + nombre + '. Ejemplo: ' + plataforma + ' https://...'
+      text: plataforma === 'auto'
+        ? '⚠️ Envíame un enlace público HTTP/HTTPS de una imagen, video o publicación compatible.'
+        : '⚠️ Envíame un enlace público válido de ' + nombre + '. Ejemplo: ' + plataforma + ' https://...'
     }, { quoted: msg });
     return;
   }
 
   const posicion = colaDescargas.length + (descargaActiva ? 1 : 0);
   await sock.sendMessage(chatId, {
-    text: posicion > 1 ? '🕒 Tu descarga de ' + nombre + ' quedó en cola. Posición aproximada: ' + posicion + '.' : '⏳ Preparando descarga de ' + nombre + ' en HD (hasta 1080p si está disponible)...'
+    text: posicion > 1
+      ? '🕒 Tu descarga quedó en cola. Posición aproximada: ' + posicion + '.'
+      : '⏳ Descargando el mejor archivo disponible (hasta 100 MB por archivo). Los videos largos pueden tardar varios minutos...'
   }, { quoted: msg });
 
   try {
     await encolarDescarga(async () => {
-      const archivos = await descargarArchivos(url, plataforma);
-      for (let i = 0; i < archivos.length; i++) {
-        const archivo = archivos[i];
-        const caption = archivos.length > 1
-          ? '✅ Archivo ' + (i + 1) + ' de ' + archivos.length + ' descargado.'
-          : (archivo.tipo === 'image'
-            ? '✅ Foto descargada de ' + nombre + '.'
-            : '✅ Video listo en la mejor calidad disponible.');
-        await sock.sendMessage(chatId, {
-          [archivo.tipo]: archivo.buffer,
-          mimetype: archivo.mimetype,
-          caption
-        }, { quoted: msg });
+      const result = await descargarArchivos(url, plataforma);
+      try {
+        for (let i = 0; i < result.archivos.length; i++) {
+          const archivo = result.archivos[i];
+          const caption = result.archivos.length > 1
+            ? '✅ Archivo ' + (i + 1) + ' de ' + result.archivos.length + ' descargado.'
+            : (archivo.tipo === 'image'
+              ? '✅ Imagen descargada.'
+              : archivo.tipo === 'video'
+                ? '✅ Video listo para enviar.'
+                : '✅ Archivo descargado.');
+
+          const mediaKey = archivo.tipo === 'image' ? 'image' : archivo.tipo === 'video' ? 'video' : 'document';
+          const media = { url: archivo.path };
+          const payload = {
+            [mediaKey]: media,
+            mimetype: archivo.mimetype,
+            caption
+          };
+          if (mediaKey === 'document') payload.fileName = archivo.nombre;
+          await sock.sendMessage(chatId, payload, { quoted: msg });
+        }
+
+        if (result.omittedOversized > 0) {
+          await sock.sendMessage(chatId, {
+            text: 'ℹ️ Se omitieron ' + result.omittedOversized + ' archivo(s) que superaban el límite de 100 MB.'
+          }, { quoted: msg });
+        }
+      } finally {
+        await result.cleanup().catch(() => {});
       }
       return true;
     });
   } catch (error) {
     console.error('Error descargando ' + nombre + ':', error.message);
-    const privado = /login|private|401|403|cookies|sign in|authentication/i.test(error.message);
+    const privateContent = /login|private|401|403|cookies|sign in|authentication|HTTP 401|HTTP 403/i.test(error.message);
     await sock.sendMessage(chatId, {
-      text: '❌ No pude descargar ese enlace de ' + nombre + '. ' +
-        (privado
+      text: '❌ No pude descargar ese enlace. ' +
+        (privateContent
           ? 'Comprueba que la publicación sea pública; el bot no puede acceder a contenido privado que requiera iniciar sesión.'
-          : 'Prueba con el enlace original de “Compartir → Copiar enlace”.') +
+          : 'Prueba con el enlace original de “Compartir → Copiar enlace” o con un enlace directo al archivo.') +
         '\n\nDetalle: ' + error.message.slice(0, 500)
     }, { quoted: msg });
   }
@@ -219,8 +537,14 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma) {
 
 module.exports = {
   comandoDescargaSocial,
+  descargarArchivos,
   extraerUrl,
+  detectarPlataforma,
+  normalizarUrl,
   liberarColaDescargas,
-  estadoColaDescargas: () => ({ pendientes: colaDescargas.length, descargaActiva,
-    segundosActiva: trabajoActivoDesde ? Math.floor((Date.now() - trabajoActivoDesde) / 1000) : 0 })
+  estadoColaDescargas: () => ({
+    pendientes: colaDescargas.length,
+    descargaActiva,
+    segundosActiva: trabajoActivoDesde ? Math.floor((Date.now() - trabajoActivoDesde) / 1000) : 0
+  })
 };
