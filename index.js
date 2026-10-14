@@ -1424,7 +1424,7 @@ async function handleMessage(update) {
 
   // Descargar automáticamente enlaces públicos a contenido multimedia, aunque
   // el host no tenga un extractor dedicado. Para texto normal se requiere una URL sola.
-  const isBareUrl = /^(?:https?:\/\/)?(?:[a-z0-9.-]+)(?::\d{1,5})?(?:\/[^\s]*)?$/i.test(trimmedText);
+  const isBareUrl = /^(?:https?:\/\/)?(?:[a-z0-9.-]+)(?::\d{1,5})?(?:[/?#][^\s]*)?$/i.test(trimmedText);
   if (isBareUrl) {
     const url = extraerUrl(trimmedText, 'auto');
     if (url) {
