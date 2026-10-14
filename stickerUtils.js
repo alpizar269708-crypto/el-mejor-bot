@@ -50,6 +50,47 @@ function inspectWebpAnimation(input) {
 }
 
 
+const MAX_ANIMATED_STICKER_BYTES = 480 * 1024;
+const MAX_STICKER_DURATION_SECONDS = 10;
+
+function parseFfmpegDurationSeconds(output) {
+  const match = String(output || '').match(/Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)/i);
+  if (!match) return null;
+  const seconds = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+}
+
+function resolveStickerDurationSeconds(ffmpegOutput, declaredSeconds, fallbackSeconds = 3) {
+  const probed = parseFfmpegDurationSeconds(ffmpegOutput);
+  const declared = Number(declaredSeconds);
+  const fallback = Number(fallbackSeconds);
+  const chosen = probed ??
+    (Number.isFinite(declared) && declared > 0 ? declared :
+      (Number.isFinite(fallback) && fallback > 0 ? fallback : 3));
+  return Math.round(Math.min(Math.max(chosen, 0.1), MAX_STICKER_DURATION_SECONDS) * 1000) / 1000;
+}
+
+function buildVideoStickerAttempts(duration) {
+  const numeric = Number(duration);
+  const actualDuration = Math.min(
+    Math.max(Number.isFinite(numeric) && numeric > 0 ? numeric : 3, 0.1),
+    MAX_STICKER_DURATION_SECONDS
+  );
+  // Priorizar movimiento fluido y reducir calidad antes que caer a 3–5 FPS.
+  // Si el original es corto (p. ej. 3 s), nunca se alarga ni se recorta.
+  return [
+    { fps: 15, quality: 60, duration: actualDuration },
+    { fps: 15, quality: 50, duration: actualDuration },
+    { fps: 12, quality: 50, duration: actualDuration },
+    { fps: 12, quality: 40, duration: actualDuration },
+    { fps: 10, quality: 35, duration: actualDuration },
+    { fps: 10, quality: 28, duration: actualDuration },
+    { fps: 8, quality: 25, duration: actualDuration },
+    { fps: 8, quality: 22, duration: Math.min(actualDuration, 6) },
+    { fps: 8, quality: 20, duration: Math.min(actualDuration, 4) }
+  ];
+}
+
 function parseMediaSizeBytes(value) {
   if (value == null) return null;
 
@@ -73,4 +114,4 @@ function parseMediaSizeBytes(value) {
   }
 }
 
-module.exports = { inspectWebpAnimation, parseMediaSizeBytes };
+module.exports = { inspectWebpAnimation, parseMediaSizeBytes, parseFfmpegDurationSeconds, resolveStickerDurationSeconds, buildVideoStickerAttempts, MAX_ANIMATED_STICKER_BYTES, MAX_STICKER_DURATION_SECONDS };
