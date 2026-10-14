@@ -591,6 +591,121 @@ async function descargarImagenesInstagramEmbedPublico(urlInicial, tempDir) {
   }
 }
 
+
+function extraerUrlsImagenApiInstagramPublica(payload) {
+  const items = [];
+  const seenItems = new Set();
+
+  function collect(value, depth = 0) {
+    if (depth > 5 || value == null) return;
+    if (typeof value === 'string') {
+      items.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const entry of value) collect(entry, depth + 1);
+      return;
+    }
+    if (typeof value !== 'object') return;
+
+    // El proveedor devuelve una lista {status, url, thumbnail}; admitir también
+    // envolturas comunes sin inspeccionar campos arbitrarios del objeto.
+    for (const key of ['url', 'download_url', 'downloadUrl', 'media_url', 'mediaUrl', 'original_url']) {
+      if (typeof value[key] === 'string') items.push(value[key]);
+    }
+    for (const key of ['data', 'items', 'results', 'result', 'links', 'media']) {
+      if (value[key] && !seenItems.has(value[key])) {
+        seenItems.add(value[key]);
+        collect(value[key], depth + 1);
+      }
+    }
+  }
+
+  collect(payload);
+  const candidates = [];
+  const seen = new Set();
+
+  for (const raw of items) {
+    const url = normalizarUrl(raw);
+    if (!url) continue;
+    const host = url.hostname.toLowerCase().replace(/^www\./, '');
+    const trustedImageHost =
+      host === 'instagram.com' || host.endsWith('.instagram.com') ||
+      host === 'cdninstagram.com' || host.endsWith('.cdninstagram.com') ||
+      host === 'fbcdn.net' || host.endsWith('.fbcdn.net');
+    const extension = path.extname(url.pathname).toLowerCase();
+    if (!trustedImageHost || !INSTAGRAM_IMAGE_EXTENSIONS.has(extension)) continue;
+
+    const normalized = url.toString();
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    candidates.push(normalized);
+    if (candidates.length >= MAX_MEDIA_FILES) break;
+  }
+  return candidates;
+}
+
+async function descargarImagenesInstagramApiPublica(urlInicial, tempDir) {
+  const pageUrl = normalizarUrl(urlInicial);
+  if (!pageUrl || !extraerShortcodeInstagram(pageUrl.toString())) return [];
+
+  const endpoint = new URL('https://backend1.tioo.eu.org/api/downloader/igdl');
+  endpoint.searchParams.set('url', pageUrl.toString());
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 22000);
+  let response = null;
+
+  try {
+    response = await fetch(endpoint, {
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
+        Accept: 'application/json'
+      }
+    });
+    if (response.status === 429) throw new Error('El servicio externo limitó temporalmente las consultas.');
+    if (!response.ok) throw new Error('El servicio externo respondió HTTP ' + response.status + '.');
+
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error('El servicio externo no devolvió JSON válido.');
+    }
+    if (payload?.status === false || payload?.success === false) {
+      throw new Error('El servicio externo no encontró medios para esta publicación.');
+    }
+
+    const imageUrls = extraerUrlsImagenApiInstagramPublica(payload);
+    if (!imageUrls.length) throw new Error('El servicio externo no devolvió URLs directas de imágenes.');
+
+    const files = [];
+    for (const imageUrl of imageUrls) {
+      try {
+        const file = await descargaDirecta(
+          imageUrl,
+          tempDir,
+          files.length + 1,
+          { Referer: 'https://www.instagram.com/' }
+        );
+        if (file.tipo === 'image') files.push(file);
+        else await fs.promises.rm(file.path, { force: true }).catch(() => {});
+      } catch (error) {
+        console.warn('⚠️ No se pudo bajar una imagen del servicio externo:', String(error?.message || error).slice(0, 160));
+      }
+      if (files.length >= MAX_MEDIA_FILES) break;
+    }
+    return files;
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('El servicio externo superó el límite de 22 segundos.');
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    try { if (response?.body && !response.bodyUsed) await response.body.cancel(); } catch {}
+  }
+}
+
 async function descargarImagenesInstagramGraphqlPublico(urlInicial, tempDir) {
   const shortcode = extraerShortcodeInstagram(urlInicial);
   if (!shortcode) return [];
@@ -932,6 +1047,15 @@ async function descargarImagenesInstagram(urlInicial, tempDir) {
     if (embedFiles.length) return embedFiles;
   } catch (error) {
     console.warn('⚠️ No se pudo usar el embed público de Instagram:', String(error?.message || error).slice(0, 220));
+  }
+
+  // Último respaldo externo con un extractor independiente: puede funcionar
+  // cuando Instagram bloquea las peticiones anónimas que salen de este servidor.
+  try {
+    const externalFiles = await descargarImagenesInstagramApiPublica(pageUrl.toString(), tempDir);
+    if (externalFiles.length) return externalFiles;
+  } catch (error) {
+    console.warn('⚠️ No se pudo usar el extractor externo de Instagram:', String(error?.message || error).slice(0, 220));
   }
 
   // gallery-dl queda como alternativa adicional; algunas solicitudes públicas siguen funcionando.
@@ -1306,6 +1430,8 @@ module.exports = {
   esErrorSinVideoInstagram,
   extraerUrlsImagenInstagram,
   extraerUrlsImagenGalleryDl,
+  extraerUrlsImagenApiInstagramPublica,
+  descargarImagenesInstagramApiPublica,
   extraerShortcodeInstagram,
   crearUrlsEmbedInstagram,
   extraerUrlsImagenInstagramDesdeJson,
