@@ -32,5 +32,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
-      - name: Build VPS container
-        run: docker build --tag el-mejor-bot:ci .
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build amd64 and ARM64 VPS containers
+        run: docker buildx build --platform linux/amd64,linux/arm64 --tag el-mejor-bot:ci .
