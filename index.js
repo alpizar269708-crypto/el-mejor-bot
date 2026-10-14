@@ -592,26 +592,25 @@ async function downloadEncryptedSession(options = {}) {
     }
   }
 
-  // Mantener los logs de arranque legibles: solo una línea por intento fallido.
-  // El detalle por archivo queda disponible activando SESSION_DEBUG=1.
-  if (invalidSnapshots.length || restoreIssues.length) {
-    console.warn(
-      '⚠️ No se encontró una copia cifrada completa para restaurar; ' +
-      'todas las copias remotas se conservaron (incompletas: ' +
-      invalidSnapshots.length + ', errores de lectura: ' + restoreIssues.length + ').'
-    );
-    if (process.env.SESSION_DEBUG === '1') {
+  // Los fallos de copias históricas no llenan los logs de cada deploy.
+  // El diagnóstico detallado se activa manualmente con SESSION_DEBUG=1.
+  if (process.env.SESSION_DEBUG === '1') {
+    if (invalidSnapshots.length || restoreIssues.length) {
+      console.warn(
+        'SESSION_DEBUG: no se encontró una copia cifrada completa; se conservaron las copias remotas ' +
+        '(incompletas: ' + invalidSnapshots.length + ', errores: ' + restoreIssues.length + ').'
+      );
       for (const invalid of invalidSnapshots) {
         console.warn('SESSION_DEBUG: ' + invalid.filename + ' en ' + invalid.branch + ': ' + invalid.message);
       }
       for (const issue of restoreIssues) {
-        console.warn('SESSION_DEBUG: ' + issue.filename + ' en ' + issue.branch + ': ' + issue.message);
+        console.warn('SESSION_DEBUG: ' + issue.filename + ' desde ' + issue.branch + ': ' + issue.message);
       }
+    } else if (backupOnly) {
+      console.warn('SESSION_DEBUG: no se pudo recuperar ninguna sesión válida del respaldo; las copias se conservaron.');
+    } else {
+      console.log('SESSION_DEBUG: no hay una copia cifrada válida para restaurar; no se borró ninguna copia remota.');
     }
-  } else if (backupOnly) {
-    console.warn('⚠️ No se pudo recuperar ninguna sesión válida del respaldo; las copias se conservaron.');
-  } else {
-    console.log('ℹ️ No hay una copia cifrada válida para restaurar; no se borró ninguna copia remota.');
   }
   restoredSessionSource = null;
   restoredSessionBranch = null;
