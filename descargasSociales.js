@@ -6,6 +6,40 @@ const youtubeDlExec = require('youtube-dl-exec');
 const youtubedl = youtubeDlExec;
 const MAX_VIDEO_BYTES = 64 * 1024 * 1024;
 const TIMEOUT_MS = 120000;
+const MAX_COLA_DESCARGAS = 100;
+const colaDescargas = [];
+let descargaActiva = false;
+let trabajoActivoDesde = null;
+function encolarDescarga(trabajo) {
+  if (colaDescargas.length >= MAX_COLA_DESCARGAS) throw new Error('La cola está llena por ahora. Intenta de nuevo en unos minutos.');
+  return new Promise((resolve, reject) => {
+    colaDescargas.push({ trabajo, resolve, reject });
+    procesarColaDescargas().catch(error => console.error('Cola de descargas:', error.message));
+  });
+}
+async function procesarColaDescargas() {
+  if (descargaActiva) return;
+  descargaActiva = true;
+  try {
+    while (colaDescargas.length) {
+      const job = colaDescargas.shift();
+      trabajoActivoDesde = Date.now();
+      try { job.resolve(await job.trabajo()); } catch (error) { job.reject(error); }
+      finally { trabajoActivoDesde = null; }
+    }
+  } finally {
+    descargaActiva = false;
+    if (colaDescargas.length) procesarColaDescargas().catch(() => {});
+  }
+}
+function liberarColaDescargas() {
+  const pendientes = colaDescargas.splice(0);
+  for (const job of pendientes) job.reject(new Error('Solicitud cancelada por liberarcache.'));
+  if (typeof global.gc === 'function') { try { global.gc(); } catch (_) {} }
+  return { pendientesCancelados: pendientes.length, descargaActiva,
+    segundosActiva: trabajoActivoDesde ? Math.floor((Date.now() - trabajoActivoDesde) / 1000) : 0,
+    recoleccionForzadaDisponible: typeof global.gc === 'function' };
+}
 
 function extraerUrl(texto, plataforma) {
   const hosts = {
@@ -88,12 +122,13 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma) {
     return;
   }
 
+  const posicion = colaDescargas.length + (descargaActiva ? 1 : 0);
   await sock.sendMessage(chatId, {
-    text: '⏳ Descargando video de ' + nombre + ' en HD (hasta 1080p si está disponible)...'
+    text: posicion > 1 ? '🕒 Tu descarga de ' + nombre + ' quedó en cola. Posición aproximada: ' + posicion + '.' : '⏳ Preparando descarga de ' + nombre + ' en HD (hasta 1080p si está disponible)...'
   }, { quoted: msg });
 
   try {
-    const video = await descargarVideo(url, plataforma);
+    const video = await encolarDescarga(() => descargarVideo(url, plataforma));
     await sock.sendMessage(chatId, {
       video,
       mimetype: 'video/mp4',
@@ -112,4 +147,9 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma) {
   }
 }
 
-module.exports = { comandoDescargaSocial };
+module.exports = {
+  comandoDescargaSocial,
+  liberarColaDescargas,
+  estadoColaDescargas: () => ({ pendientes: colaDescargas.length, descargaActiva,
+    segundosActiva: trabajoActivoDesde ? Math.floor((Date.now() - trabajoActivoDesde) / 1000) : 0 })
+};
