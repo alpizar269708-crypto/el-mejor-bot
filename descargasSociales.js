@@ -32,9 +32,9 @@ async function descargarVideo(url, plataforma) {
   try {
     const opciones = {
       output,
-      format: plataforma === 'instagram'
-        ? 'best[ext=mp4]/best'
-        : 'best[ext=mp4]/best',
+      // Prioriza 1080p y 720p, combinando video y audio cuando están separados.
+      // Si la publicación no ofrece HD, baja a la mejor calidad disponible.
+      format: 'bestvideo[height<=1080][height>=720]+bestaudio/best[height<=1080][height>=720]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/bestvideo+bestaudio/best',
       mergeOutputFormat: 'mp4',
       noWarnings: true,
       noPlaylist: true,
@@ -81,7 +81,7 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma) {
   }
 
   await sock.sendMessage(chatId, {
-    text: '⏳ Descargando video de ' + nombre + '...'
+    text: '⏳ Descargando video de ' + nombre + ' en HD (hasta 1080p si está disponible)...'
   }, { quoted: msg });
 
   try {
@@ -89,7 +89,7 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma) {
     await sock.sendMessage(chatId, {
       video,
       mimetype: 'video/mp4',
-      caption: '✅ Video listo.'
+      caption: '✅ Video listo en la mejor calidad disponible.'
     }, { quoted: msg });
   } catch (error) {
     console.error('Error descargando ' + nombre + ':', error.message);
