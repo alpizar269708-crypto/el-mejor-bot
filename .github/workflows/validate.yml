@@ -1,0 +1,25 @@
+name: Validate Node.js
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - feature/tiktok-instagram-downloads
+
+jobs:
+  syntax-and-install:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm install
+      - name: Check JavaScript syntax
+        run: |
+          node --check index.js
+          node --check descargasSociales.js
