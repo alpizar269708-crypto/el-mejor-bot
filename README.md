@@ -6,6 +6,10 @@ Bot de WhatsApp dedicado a crear stickers de imágenes y videos.
 - Envía una imagen con `sticker`, `s` o `st`.
 - Envía un video con `sticker`, `s` o `st`.
 - También puedes responder una imagen o video con uno de esos comandos.
+- Envía `tiktok https://...` para descargar un video público de TikTok.
+- Envía `instagram https://...` para descargar un video público de Instagram/Reels.
+
+Las descargas usan `yt-dlp`; la disponibilidad depende de que la publicación sea pública y de los cambios de cada plataforma. No se incluyen comandos ni textos de apoyo a creadores del bot de referencia.
 - El pack y autor son **el mejor bot**.
 
 ## Login
