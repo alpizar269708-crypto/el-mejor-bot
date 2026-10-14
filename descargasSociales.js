@@ -331,7 +331,6 @@ async function listarArchivosMedia(tempDir) {
     const ruta = path.join(tempDir, nombre);
     const stat = await fs.promises.stat(ruta);
     if (!stat.isFile() || !stat.size) continue;
-    if (stat.size > MAX_MEDIA_BYTES) continue;
 
     const extension = path.extname(nombre).toLowerCase();
     const isImage = esImagenExtension(extension);
