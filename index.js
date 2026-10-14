@@ -869,6 +869,7 @@ let loginRefreshPromise = null;
 let startSocketPromise = null;
 let startupPromise = null;
 let startupReady = false;
+let authTransitionTail = Promise.resolve();
 let sessionIoTail = Promise.resolve();
 let sessionUploadDone = null;
 const pendingCredentialWrites = new Set();
@@ -944,6 +945,14 @@ async function sendText(jid, text, quoted) {
 
 function normalizePhoneNumber(value) {
   return String(value || '').replace(/\D/g, '');
+}
+
+function serializeAuthTransition(action) {
+  const operation = authTransitionTail.then(action, action);
+  authTransitionTail = operation.catch(error => {
+    console.error('❌ Falló una transición de autenticación:', error?.message || error);
+  });
+  return operation;
 }
 
 function requireAdminAuth(req, res, next) {
@@ -1843,18 +1852,20 @@ app.post('/iniciar', requireAdminAuth, async (req, res) => {
   }
 
   try {
-    if (startupPromise && !startupReady) {
-      try { await startupPromise; } catch {}
-    }
+    await serializeAuthTransition(async () => {
+      if (startupPromise && !startupReady) {
+        try { await startupPromise; } catch {}
+      }
 
-    pairingNumber = numero;
-    pairingCode = null;
-    pairingRequested = false;
-    pairingError = null;
-    qrDataUrl = null;
+      pairingNumber = numero;
+      pairingCode = null;
+      pairingRequested = false;
+      pairingError = null;
+      qrDataUrl = null;
 
-    await restartForFreshLogin();
-    setTimeout(() => requestPairingCodeIfNeeded(), 500);
+      await restartForFreshLogin();
+      setTimeout(() => requestPairingCodeIfNeeded(), 500);
+    });
 
     res.redirect('/');
   } catch (error) {
@@ -1870,6 +1881,10 @@ async function logoutAndForgetSession() {
   clearTimeout(reconnectTimer);
   clearTimeout(uploadTimer);
   socketGeneration += 1;
+  const inFlightStart = startSocketPromise;
+  if (inFlightStart) {
+    try { await inFlightStart; } catch {}
+  }
 
   // Dejar terminar las escrituras ya iniciadas; después invalidar la sesión en
   // WhatsApp y eliminar ambos archivos cifrados para que un redeploy no restaure
@@ -1928,7 +1943,7 @@ async function logoutAndForgetSession() {
 
 app.post('/cerrar-sesion', requireAdminAuth, async (_req, res) => {
   try {
-    await logoutAndForgetSession();
+    await serializeAuthTransition(logoutAndForgetSession);
   } catch (error) {
     console.error('❌ Error cerrando sesión:', error.message);
   }
@@ -1937,7 +1952,7 @@ app.post('/cerrar-sesion', requireAdminAuth, async (_req, res) => {
 
 app.get('/limpiar-whatsapp', requireAdminAuth, async (_req, res) => {
   try {
-    const remoteSessionClean = await logoutAndForgetSession();
+    const remoteSessionClean = await serializeAuthTransition(logoutAndForgetSession);
     res.status(remoteSessionClean ? 200 : 503).json({
       ok: remoteSessionClean,
       mensaje: remoteSessionClean
