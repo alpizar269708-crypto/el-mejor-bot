@@ -1476,6 +1476,8 @@ async function restartForFreshLogin() {
     }
     clearTimeout(reconnectTimer);
     clearTimeout(uploadTimer);
+    clearTimeout(sessionRestoreRetryTimer);
+    sessionRestoreRetryTimer = null;
     socketGeneration += 1;
     await Promise.allSettled([...pendingCredentialWrites]);
     if (sessionUploadDone) await sessionUploadDone;
@@ -1644,7 +1646,9 @@ async function startSocketInternal(restoreSession = true) {
       console.log('🟢 WhatsApp conectado:', lastConnectedAt);
 
       clearTimeout(uploadTimer);
-      // No competir con FFmpeg justo al conectar. El respaldo de sesión sigue
+      clearTimeout(sessionRestoreRetryTimer);
+      sessionRestoreRetryTimer = null;
+      // No competir con FFmpeg justo al conectar; El respaldo de sesión sigue
       // haciéndose automáticamente, pero unos segundos después.
       scheduleSessionUpload(10000);
       return;
@@ -1982,6 +1986,9 @@ async function logoutAndForgetSession() {
   shuttingDown = true;
   clearTimeout(reconnectTimer);
   clearTimeout(uploadTimer);
+  clearTimeout(sessionRestoreRetryTimer);
+  sessionRestoreRetryTimer = null;
+  remotePrimarySessionRejected = false;
   socketGeneration += 1;
   const inFlightStart = startSocketPromise;
   if (inFlightStart) {
@@ -2083,6 +2090,8 @@ async function gracefulShutdown(signal) {
   shuttingDown = true;
   clearTimeout(reconnectTimer);
   clearTimeout(uploadTimer);
+  clearTimeout(sessionRestoreRetryTimer);
+  sessionRestoreRetryTimer = null;
 
   console.log('🛑 Señal de apagado:', signal);
 
