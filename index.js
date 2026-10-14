@@ -16,7 +16,7 @@ const {
 } = require('@whiskeysockets/baileys');
 
 const { Sticker, StickerTypes } = require('wa-sticker-formatter');
-const { inspectWebpAnimation, parseMediaSizeBytes } = require('./stickerUtils');
+const { inspectWebpAnimation, parseMediaSizeBytes, resolveStickerDurationSeconds, buildVideoStickerAttempts, MAX_ANIMATED_STICKER_BYTES } = require('./stickerUtils');
 const { validateSessionSnapshot } = require('./sessionUtils');
 
 const crypto = require('crypto');
@@ -1173,7 +1173,6 @@ async function requestPairingCodeIfNeeded() {
 }
 
 const FFMPEG_STICKER_TIMEOUT_MS = 90000;
-const MAX_ANIMATED_STICKER_BYTES = 450 * 1024;
 const MAX_VIDEO_STICKER_QUEUE = 30;
 const videoQueue = [];
 let videoQueueRunning = false;
@@ -1202,8 +1201,8 @@ function runStickerFfmpeg(command, output, label = 'FFmpeg') {
   });
 }
 
-async function createAnimatedWebpSticker(buffer, duration = 10, fps = 12, quality = 55) {
-  const actualDuration = Math.min(Math.max(Number(duration) || 10, 0.1), 10);
+async function createAnimatedWebpSticker(buffer, duration = 3, fps = 12, quality = 55) {
+  const actualDuration = Math.min(Math.max(Number(duration) || 3, 0.1), 10);
   const actualFps = Math.min(Math.max(Number(fps) || 12, 1), 15);
   const actualQuality = Math.min(Math.max(Number(quality) || 55, 20), 80);
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-sticker-'));
@@ -1225,7 +1224,7 @@ async function createAnimatedWebpSticker(buffer, duration = 10, fps = 12, qualit
         '-c:v libwebp_anim',
         '-lossless 0',
         '-q:v ' + actualQuality,
-        '-compression_level 4',
+        '-compression_level 6',
         '-loop 0',
         '-preset picture',
         '-threads 2'
@@ -1280,17 +1279,50 @@ async function drainVideoQueue() {
   }
 }
 
+async function detectarDuracionVideoSticker(buffer, duracionDeclarada) {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-probe-'));
+  const input = path.join(tempDir, 'video-original.mp4');
+
+  try {
+    await fs.promises.writeFile(input, buffer);
+    let diagnostic = '';
+    try {
+      const result = await execFileAsync(ffmpegInstaller.path, [
+        '-hide_banner',
+        '-nostdin',
+        '-i', input,
+        '-frames:v', '1',
+        '-f', 'null',
+        '-'
+      ], {
+        timeout: 12000,
+        maxBuffer: 1024 * 1024,
+        windowsHide: true
+      });
+      diagnostic = String(result?.stderr || '') + '\n' + String(result?.stdout || '');
+    } catch (error) {
+      // FFmpeg suele devolver código distinto de cero si solo se le pide inspeccionar;
+      // su diagnóstico de entrada sigue conteniendo la duración cuando está disponible.
+      diagnostic = String(error?.stderr || '') + '\n' + String(error?.stdout || '') + '\n' + String(error?.message || '');
+    }
+
+    const duration = resolveStickerDurationSeconds(diagnostic, duracionDeclarada, 3);
+    console.log(
+      '⏱️ Duración detectada del video: ' + duration.toFixed(2) +
+      ' s' + (Number(duracionDeclarada) > 0 ? ' (WhatsApp indica ' + Number(duracionDeclarada).toFixed(2) + ' s).' : '.')
+    );
+    return duration;
+  } catch (error) {
+    const fallback = resolveStickerDurationSeconds('', duracionDeclarada, 3);
+    console.warn('⚠️ No se pudo leer la duración exacta del video; se usará ' + fallback.toFixed(2) + ' s.');
+    return fallback;
+  } finally {
+    await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 async function createFastVideoSticker(buffer, duration) {
-  const actualDuration = Math.min(Math.max(Number(duration) || 10, 0.1), 10);
-  const attempts = [
-    { fps: 12, quality: 55, duration: actualDuration },
-    { fps: 10, quality: 45, duration: actualDuration },
-    { fps: 8, quality: 38, duration: actualDuration },
-    { fps: 6, quality: 30, duration: Math.min(actualDuration, 8) },
-    { fps: 5, quality: 25, duration: Math.min(actualDuration, 8) },
-    { fps: 4, quality: 20, duration: Math.min(actualDuration, 6) },
-    { fps: 3, quality: 15, duration: Math.min(actualDuration, 5) }
-  ];
+  const attempts = buildVideoStickerAttempts(duration);
   let lastError = null;
 
   for (let index = 0; index < attempts.length; index++) {
@@ -1304,16 +1336,25 @@ async function createFastVideoSticker(buffer, duration) {
       );
 
       if (result.length <= MAX_ANIMATED_STICKER_BYTES) return result;
-      lastError = new Error('El WebP animado pesa ' + Math.ceil(result.length / 1024) + ' KB (límite interno: 450 KB).');
-      console.warn('⚠️ Sticker demasiado pesado; reintentando con menor FPS/calidad (' + (index + 2) + '/' + attempts.length + ').');
+      lastError = new Error(
+        'El WebP animado pesa ' + Math.ceil(result.length / 1024) +
+        ' KB (límite interno: ' + Math.floor(MAX_ANIMATED_STICKER_BYTES / 1024) + ' KB).'
+      );
+      console.warn(
+        '⚠️ Sticker demasiado pesado; reintentando con ' + attempt.fps +
+        ' FPS y calidad ' + attempt.quality + ' (' + (index + 2) + '/' + attempts.length + ').'
+      );
     } catch (error) {
       lastError = error;
-      console.warn('⚠️ Intento de sticker animado ' + (index + 1) + '/4: ' + error.message);
+      console.warn(
+        '⚠️ Intento de sticker animado ' + (index + 1) + '/' + attempts.length + ': ' + error.message
+      );
     }
   }
 
   throw new Error(
-    'No se pudo generar un sticker animado válido de menos de 450 KB tras ' + attempts.length + ' intentos. ' +
+    'No se pudo generar un sticker animado fluido dentro de ' +
+    Math.floor(MAX_ANIMATED_STICKER_BYTES / 1024) + ' KB tras ' + attempts.length + ' intentos. ' +
     (lastError?.message || 'Error de conversión desconocido.')
   );
 }
@@ -1366,9 +1407,9 @@ async function createStickerWork(message, sourceMessage, mediaType) {
 
   if (mediaType === 'video') {
     const videoMessage = unwrapMessage(sourceMessage)?.videoMessage || {};
-    const duration = Number(videoMessage.seconds || 10);
+    const duration = await detectarDuracionVideoSticker(buffer, videoMessage.seconds);
 
-    const stickerBuffer = await createFastVideoSticker(buffer, Math.min(duration, 10));
+    const stickerBuffer = await createFastVideoSticker(buffer, duration);
 
     // Liberar la referencia al video original antes de enviar.
     buffer = null;
