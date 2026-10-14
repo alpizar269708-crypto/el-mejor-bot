@@ -610,9 +610,8 @@ async function uploadEncryptedSession() {
     return false;
   }
 
-  // Si WhatsApp ya abrió la conexión, la sesión está vinculada aunque
-  // creds.json todavía no haya alcanzado a reflejar registered=true.
-  // Esto evita la carrera entre connection.open y creds.update.
+  // Guardar únicamente snapshots confirmados como registrados. No confiar
+  // solo en connection.open porque puede ocurrir antes de persistir las creds.
   if (creds?.registered !== true) {
     lastSessionUploadOk = false;
     lastSessionUploadError = 'La sesión todavía no está marcada como vinculada';
@@ -1195,9 +1194,12 @@ async function handleMessage(update) {
   if (!message || message.key?.fromMe) return;
   if (update?.type && update.type !== 'notify') return;
   const messageId = message.key?.id;
-  if (messageId) {
-    if (processedMessageIds.has(messageId)) return;
-    processedMessageIds.add(messageId);
+  const processedId = messageId
+    ? [message.key?.remoteJid || '', message.key?.participant || '', messageId].join(':')
+    : null;
+  if (processedId) {
+    if (processedMessageIds.has(processedId)) return;
+    processedMessageIds.add(processedId);
     if (processedMessageIds.size > 2000) {
       processedMessageIds.delete(processedMessageIds.values().next().value);
     }
@@ -1504,7 +1506,7 @@ async function startSocketInternal(restoreSession = true) {
 
         // Si WhatsApp rechaza la sesión principal, probar una sola vez el
         // respaldo anterior. No borrar el respaldo antes de verificarlo.
-        if (rejectedSource === ENCRYPTED_SESSION_FILE && sessionSecurityReady()) {
+        if (rejectedSource !== LAST_GOOD_SESSION_FILE && sessionSecurityReady()) {
           const backupRestored = await downloadEncryptedSession({ backupOnly: true });
           await deleteEncryptedSession(); // Evita volver a cargar la sesión principal rechazada en el próximo arranque.
           if (backupRestored) {
