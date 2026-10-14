@@ -128,12 +128,15 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma) {
   }, { quoted: msg });
 
   try {
-    const video = await encolarDescarga(() => descargarVideo(url, plataforma));
-    await sock.sendMessage(chatId, {
-      video,
-      mimetype: 'video/mp4',
-      caption: '✅ Video listo en la mejor calidad disponible.'
-    }, { quoted: msg });
+    await encolarDescarga(async () => {
+      const video = await descargarVideo(url, plataforma);
+      await sock.sendMessage(chatId, {
+        video,
+        mimetype: 'video/mp4',
+        caption: '✅ Video listo en la mejor calidad disponible.'
+      }, { quoted: msg });
+      return true;
+    });
   } catch (error) {
     console.error('Error descargando ' + nombre + ':', error.message);
     const privado = /login|private|401|403|cookies|sign in|authentication/i.test(error.message);
