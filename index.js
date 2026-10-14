@@ -41,6 +41,9 @@ const ENCRYPTED_SESSION_FILE = 'session.enc';
 const LAST_GOOD_SESSION_FILE = 'session.last-good.enc';
 let restoredSessionSource = null;
 let restoredSessionBranch = null;
+// Copias remotas rechazadas por WhatsApp se conservan, pero no se reintentan
+// una y otra vez dentro del mismo proceso hasta que se guarde una sesión nueva.
+const rejectedRemoteSessionSources = new Set();
 
 // Memoria persistente del bot.
 // Se mantiene en RAM para máxima velocidad y se sincroniza en segundo plano
@@ -406,6 +409,31 @@ function scheduleMemorySave(delay = 120000) {
   }, delay);
 }
 
+function quarantineLocalSessionDirectory(reason = 'rejected') {
+  if (!fs.existsSync(SESSION_DIR)) {
+    fs.mkdirSync(SESSION_DIR, { recursive: true });
+    return true;
+  }
+
+  const safeReason = String(reason).replace(/[^a-z0-9_-]/gi, '-').slice(0, 40) || 'session';
+  const destination = path.join(
+    path.dirname(SESSION_DIR),
+    '.session-quarantine-' + safeReason + '-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex')
+  );
+
+  try {
+    // Apartar la carpeta completa en vez de destruir credenciales locales.
+    // Está fuera de SESSION_DIR, así que no se sube como sesión activa.
+    fs.renameSync(SESSION_DIR, destination);
+    fs.mkdirSync(SESSION_DIR, { recursive: true });
+    console.warn('📦 La copia local de la sesión se apartó para conservarla; no se borró.');
+    return true;
+  } catch (error) {
+    console.error('❌ No se pudo apartar la copia local de sesión sin borrarla:', error.message);
+    return false;
+  }
+}
+
 function restoreSessionFiles(files, filename) {
   const restoreDir = path.join(path.dirname(SESSION_DIR), '.session-restore-' + process.pid + '-' + crypto.randomBytes(6).toString('hex'));
   const previousDir = SESSION_DIR + '.previous-' + process.pid + '-' + crypto.randomBytes(4).toString('hex');
@@ -470,16 +498,18 @@ async function downloadEncryptedSession(options = {}) {
 
   const backupOnly = options.backupOnly === true;
   const primaryOnly = options.primaryOnly === true;
+  const legacyOnly = options.legacyOnly === true;
   const allowLegacyFallback =
-    options.allowLegacyFallback !== false &&
-    !backupOnly &&
-    !primaryOnly &&
-    LEGACY_SESSION_BRANCH !== SESSION_BRANCH;
+    LEGACY_SESSION_BRANCH !== SESSION_BRANCH &&
+    (legacyOnly || (options.allowLegacyFallback !== false && !backupOnly && !primaryOnly));
   const expectedGeneration = options.expectedGeneration ?? socketGeneration;
   const invalidSnapshots = [];
   const restoreIssues = [];
 
   async function tryRestore(filename, label, branch = SESSION_BRANCH) {
+    const sourceKey = branch + ':' + filename;
+    if (rejectedRemoteSessionSources.has(sourceKey)) return false;
+
     const url = 'https://api.github.com/repos/' + GITHUB_REPO +
       '/contents/' + filename + '?ref=' + encodeURIComponent(branch);
     const response = await githubRequest(url);
@@ -515,7 +545,7 @@ async function downloadEncryptedSession(options = {}) {
   }
 
   // Primero se intenta la rama de sesiones actual.
-  if (!backupOnly) {
+  if (!backupOnly && !legacyOnly) {
     try {
       if (await tryRestore(ENCRYPTED_SESSION_FILE, 'Sesión cifrada restaurada desde GitHub.', SESSION_BRANCH)) return true;
     } catch (error) {
@@ -538,7 +568,7 @@ async function downloadEncryptedSession(options = {}) {
 
   // El respaldo solo se usa si la principal no sirve; los avisos se difieren
   // hasta saber si otra copia válida puede recuperar la sesión.
-  try {
+  if (!legacyOnly) try {
     if (await tryRestore(LAST_GOOD_SESSION_FILE, '🛡️ Sesión restaurada desde el respaldo de última sesión válida.', SESSION_BRANCH)) return true;
   } catch (error) {
     restoreIssues.push({ filename: LAST_GOOD_SESSION_FILE, branch: SESSION_BRANCH, message: error.message });
@@ -782,6 +812,7 @@ async function uploadEncryptedSession() {
     lastSessionUploadOk = true;
     lastSessionUploadError = null;
     sessionUploadFailures = 0;
+    rejectedRemoteSessionSources.clear();
     remotePrimarySessionRejected = false;
     console.log('✅ Sesión cifrada guardada en GitHub.');
     return true;
@@ -888,6 +919,7 @@ function scheduleSessionRestoreRetry(mode = 'backupOnly', attempt = 1) {
     const options = { expectedGeneration: generation };
     if (mode === 'backupOnly') options.backupOnly = true;
     if (mode === 'primaryOnly') options.primaryOnly = true;
+    if (mode === 'legacyOnly') options.legacyOnly = true;
 
     let restored = false;
     try {
@@ -1785,7 +1817,8 @@ async function startSocketInternal(restoreSession = true) {
         // Si WhatsApp rechazó el respaldo, retiramos únicamente esa copia e
         // intentamos la principal en modo aislado, sin volver al mismo respaldo.
         if (rejectedSource === LAST_GOOD_SESSION_FILE) {
-          await deleteEncryptedSessionFile(LAST_GOOD_SESSION_FILE, rejectedSourceBranch);
+          // WhatsApp rechazó esta copia, pero no la borramos de GitHub.
+          // Primero probamos la principal y, después, la rama heredada.
           if (recoveryGeneration !== socketGeneration) return;
 
           const primaryRestored = await downloadEncryptedSession({
@@ -1802,12 +1835,25 @@ async function startSocketInternal(restoreSession = true) {
             return;
           }
 
+          const legacyRestored = await downloadEncryptedSession({
+            legacyOnly: true,
+            expectedGeneration: recoveryGeneration
+          });
+          if (recoveryGeneration !== socketGeneration) return;
+          if (legacyRestored) {
+            sessionRecoveryFailures = 0;
+            pairingError = null;
+            console.warn('🛡️ Sesión recuperada desde la rama heredada; se intentará reconectar.');
+            scheduleReconnect(statusCode);
+            return;
+          }
+
           connectionState = 'desconectado';
-          scheduleSessionRestoreRetry('primaryOnly', 1);
+          scheduleSessionRestoreRetry('legacyOnly', 1);
           return;
         }
 
-        // Si la principal fue rechazada, no se promueve a last-good.
+        // Si la principal fue rechazada, no se promueve a last-good ni se borra.
         const backupRestored = await downloadEncryptedSession({
           backupOnly: true,
           expectedGeneration: recoveryGeneration
@@ -1816,17 +1862,26 @@ async function startSocketInternal(restoreSession = true) {
 
         if (rejectedSource === ENCRYPTED_SESSION_FILE) {
           remotePrimarySessionRejected = true;
-          const primaryDeleted = await deleteEncryptedSessionFile(ENCRYPTED_SESSION_FILE, rejectedSourceBranch);
-          if (recoveryGeneration !== socketGeneration) return;
-          if (!primaryDeleted) {
-            console.warn('⚠️ No se pudo retirar session.enc rechazada; se omitirá como respaldo hasta guardar una sesión nueva.');
-          }
+          console.warn('🛡️ Se conserva la copia cifrada rechazada en GitHub; no se borrará automáticamente.');
         }
 
         if (backupRestored) {
           sessionRecoveryFailures = 0;
           pairingError = null;
           console.warn('🛡️ Sesión alternativa restaurada; se intentará reconectar.');
+          scheduleReconnect(statusCode);
+          return;
+        }
+
+        const legacyRestored = await downloadEncryptedSession({
+          legacyOnly: true,
+          expectedGeneration: recoveryGeneration
+        });
+        if (recoveryGeneration !== socketGeneration) return;
+        if (legacyRestored) {
+          sessionRecoveryFailures = 0;
+          pairingError = null;
+          console.warn('🛡️ Sesión recuperada desde la rama heredada; se intentará reconectar.');
           scheduleReconnect(statusCode);
           return;
         }
