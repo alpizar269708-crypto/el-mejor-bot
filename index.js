@@ -2108,11 +2108,19 @@ async function logoutAndForgetSession() {
 
   let remoteSessionClean = true;
   if (sessionSecurityReady()) {
-    const [primaryDeleted, backupDeleted] = await Promise.all([
+    const deletionTasks = [
       deleteEncryptedSession(),
       deleteEncryptedSessionFile(LAST_GOOD_SESSION_FILE)
-    ]);
-    remoteSessionClean = primaryDeleted && backupDeleted;
+    ];
+
+    // Un cierre de sesión solicitado por el usuario también elimina la copia
+    // heredada, para que el fallback no vuelva a restaurar una sesión cerrada.
+    if (LEGACY_SESSION_BRANCH !== SESSION_BRANCH) {
+      deletionTasks.push(deleteEncryptedSessionFile(ENCRYPTED_SESSION_FILE, LEGACY_SESSION_BRANCH));
+    }
+
+    const deletionResults = await Promise.all(deletionTasks);
+    remoteSessionClean = deletionResults.every(Boolean);
     if (!remoteSessionClean) {
       console.error('❌ No se pudieron borrar todos los respaldos remotos; una sesión antigua podría seguir disponible en GitHub.');
     }
