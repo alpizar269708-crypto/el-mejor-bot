@@ -16,6 +16,7 @@ const {
 } = require('@whiskeysockets/baileys');
 
 const { Sticker, StickerTypes } = require('wa-sticker-formatter');
+const { inspectWebpAnimation } = require('./stickerUtils');
 
 const crypto = require('crypto');
 const { execFile } = require('child_process');
@@ -954,13 +955,16 @@ async function requestPairingCodeIfNeeded() {
   }
 }
 
-const FFMPEG_STICKER_TIMEOUT_MS = 120000;
+const FFMPEG_STICKER_TIMEOUT_MS = 90000;
+const MAX_ANIMATED_STICKER_BYTES = 450 * 1024;
+const MAX_VIDEO_STICKER_QUEUE = 30;
+const videoQueue = [];
+let videoQueueRunning = false;
 
 function runStickerFfmpeg(command, output, label = 'FFmpeg') {
   return new Promise((resolve, reject) => {
     let finished = false;
-
-    const finish = (error) => {
+    const finish = error => {
       if (finished) return;
       finished = true;
       clearTimeout(timeout);
@@ -969,9 +973,9 @@ function runStickerFfmpeg(command, output, label = 'FFmpeg') {
     };
 
     const timeout = setTimeout(() => {
-      console.error('⏱️ ' + label + ' tardó demasiado; se cancela para liberar la cola.');
+      console.error('⏱️ ' + label + ' excedió el límite de procesamiento.');
       try { command.kill('SIGKILL'); } catch {}
-      finish(new Error('El video tardó demasiado en procesarse y fue cancelado para que el bot siga funcionando.'));
+      finish(new Error('La conversión del video superó el límite de 90 segundos.'));
     }, FFMPEG_STICKER_TIMEOUT_MS);
 
     command
@@ -981,45 +985,66 @@ function runStickerFfmpeg(command, output, label = 'FFmpeg') {
   });
 }
 
-async function createAnimatedWebpSticker(buffer, duration = 10) {
+async function createAnimatedWebpSticker(buffer, duration = 10, fps = 12, quality = 55) {
   const actualDuration = Math.min(Math.max(Number(duration) || 10, 0.1), 10);
+  const actualFps = Math.min(Math.max(Number(fps) || 12, 1), 15);
+  const actualQuality = Math.min(Math.max(Number(quality) || 55, 20), 80);
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-sticker-'));
   const input = path.join(tempDir, 'input');
   const output = path.join(tempDir, 'sticker.webp');
+
   try {
     await fs.promises.writeFile(input, buffer);
     const command = ffmpeg(input)
       .videoFilters([
-        'fps=12',
+        'fps=' + actualFps,
         'scale=512:512:force_original_aspect_ratio=increase:flags=bicubic',
         'crop=512:512:(iw-512)/2:(ih-512)/2',
         'setsar=1'
       ])
       .outputOptions([
-        '-t ' + actualDuration, '-an', '-c:v libwebp_anim',
-        '-lossless 0', '-q:v 55', '-compression_level 4',
-        '-loop 0', '-preset picture', '-threads 2'
+        '-t ' + actualDuration,
+        '-an',
+        '-c:v libwebp_anim',
+        '-lossless 0',
+        '-q:v ' + actualQuality,
+        '-compression_level 4',
+        '-loop 0',
+        '-preset picture',
+        '-threads 2'
       ]);
 
-    await runStickerFfmpeg(command, output, 'FFmpeg sticker principal');
-
+    await runStickerFfmpeg(command, output, 'FFmpeg sticker animado');
     const result = await fs.promises.readFile(output);
-    console.log('🎥 WebP directo: ' + Math.round(result.length / 1024 * 10) / 10 + ' KB');
+    const inspection = inspectWebpAnimation(result);
+    if (!inspection.valid || !inspection.animated) {
+      throw new Error(
+        'FFmpeg produjo un WebP inválido o estático (' +
+        (inspection.reason || inspection.frameCount + ' fotogramas') +
+        '). Se probará una conversión alternativa.'
+      );
+    }
+
+    console.log(
+      '🎞️ WebP animado validado: ' + inspection.frameCount + ' fotogramas, ' +
+      Math.round(result.length / 1024 * 10) / 10 + ' KB, ' + actualFps + ' FPS.'
+    );
     return result;
   } finally {
     await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
-const MAX_ANIMATED_STICKER_BYTES = 450 * 1024;
-const videoQueue = [];
-let videoQueueRunning = false;
 function enqueueVideoSticker(task) {
+  if (videoQueue.length >= MAX_VIDEO_STICKER_QUEUE) {
+    return Promise.reject(new Error('La cola de stickers de video está llena; vuelve a intentarlo en unos minutos.'));
+  }
   return new Promise((resolve, reject) => {
     videoQueue.push({ task, resolve, reject });
     drainVideoQueue();
   });
 }
+
 async function drainVideoQueue() {
   if (videoQueueRunning) return;
   videoQueueRunning = true;
@@ -1037,36 +1062,42 @@ async function drainVideoQueue() {
     videoQueueRunning = false;
   }
 }
+
 async function createFastVideoSticker(buffer, duration) {
-  let result = await createAnimatedWebpSticker(buffer, duration);
-  if (result.length <= MAX_ANIMATED_STICKER_BYTES) return result;
+  const actualDuration = Math.min(Math.max(Number(duration) || 10, 0.1), 10);
+  const attempts = [
+    { fps: 12, quality: 55, duration: actualDuration },
+    { fps: 10, quality: 45, duration: actualDuration },
+    { fps: 8, quality: 38, duration: actualDuration },
+    { fps: 6, quality: 30, duration: Math.min(actualDuration, 8) }
+  ];
+  let lastError = null;
 
-  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-sticker-retry-'));
-  const input = path.join(tempDir, 'input');
-  const output = path.join(tempDir, 'sticker.webp');
-  try {
-    await fs.promises.writeFile(input, buffer);
-    const command = ffmpeg(input)
-      .videoFilters([
-        'fps=12',
-        'scale=512:512:force_original_aspect_ratio=increase:flags=bicubic',
-        'crop=512:512:(iw-512)/2:(ih-512)/2',
-        'setsar=1'
-      ])
-      .outputOptions([
-        '-t ' + Math.min(Math.max(Number(duration) || 10, 0.1), 10),
-        '-an', '-c:v libwebp_anim', '-lossless 0', '-q:v 46',
-        '-compression_level 4', '-loop 0', '-preset picture', '-threads 2'
-      ]);
+  for (let index = 0; index < attempts.length; index++) {
+    const attempt = attempts[index];
+    try {
+      const result = await createAnimatedWebpSticker(
+        buffer,
+        attempt.duration,
+        attempt.fps,
+        attempt.quality
+      );
 
-    await runStickerFfmpeg(command, output, 'FFmpeg sticker segundo intento');
-    result = await fs.promises.readFile(output);
-    console.log('🎥 WebP segundo intento: ' + Math.round(result.length / 1024 * 10) / 10 + ' KB');
-  } finally {
-    await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      if (result.length <= MAX_ANIMATED_STICKER_BYTES) return result;
+      lastError = new Error('El WebP animado pesa ' + Math.ceil(result.length / 1024) + ' KB (límite interno: 450 KB).');
+      console.warn('⚠️ Sticker demasiado pesado; reintentando con menor FPS/calidad (' + (index + 2) + '/4).');
+    } catch (error) {
+      lastError = error;
+      console.warn('⚠️ Intento de sticker animado ' + (index + 1) + '/4: ' + error.message);
+    }
   }
-  return result;
+
+  throw new Error(
+    'No se pudo generar un sticker animado válido de menos de 450 KB tras 4 intentos. ' +
+    (lastError?.message || 'Error de conversión desconocido.')
+  );
 }
+
 async function createStickerWork(message, sourceMessage, mediaType) {
   const jid = message.key.remoteJid;
 
@@ -1093,6 +1124,9 @@ async function createStickerWork(message, sourceMessage, mediaType) {
       reuploadRequest: sock.updateMediaMessage
     }
   );
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    throw new Error('WhatsApp no entregó el archivo multimedia completo. Intenta reenviar la imagen o el video.');
+  }
 
   if (mediaType === 'video') {
     const videoMessage = unwrapMessage(sourceMessage)?.videoMessage || {};
