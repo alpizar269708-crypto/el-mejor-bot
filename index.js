@@ -419,6 +419,21 @@ async function downloadEncryptedSession() {
     const decrypted = decryptSession(encrypted);
     const files = JSON.parse(decrypted);
 
+    // Nunca restaurar una copia remota de una vinculación que quedó a medias.
+    // Devolver false permite probar session.last-good.enc antes de rendirse.
+    let savedCreds;
+    try {
+      if (!files['creds.json']) throw new Error('Falta creds.json');
+      savedCreds = JSON.parse(Buffer.from(files['creds.json'], 'base64').toString('utf8'));
+    } catch {
+      console.warn('⚠️ Se ignora ' + filename + ': credenciales ausentes o inválidas.');
+      return false;
+    }
+    if (savedCreds?.registered !== true) {
+      console.warn('⚠️ Se ignora ' + filename + ': la vinculación guardada está incompleta.');
+      return false;
+    }
+
     fs.rmSync(SESSION_DIR, { recursive: true, force: true });
     fs.mkdirSync(SESSION_DIR, { recursive: true });
 
@@ -551,10 +566,11 @@ async function uploadEncryptedSession() {
   // Si WhatsApp ya abrió la conexión, la sesión está vinculada aunque
   // creds.json todavía no haya alcanzado a reflejar registered=true.
   // Esto evita la carrera entre connection.open y creds.update.
-  if (creds?.registered !== true && connectionState !== 'conectado') {
+  if (creds?.registered !== true) {
     lastSessionUploadOk = false;
-    lastSessionUploadError = 'La sesión todavía no está vinculada';
-    console.log('⏸️ Sesión no guardada: la vinculación de WhatsApp todavía no terminó.');
+    lastSessionUploadError = 'La sesión todavía no está marcada como vinculada';
+    console.log('⏸️ Sesión no guardada: registered todavía no es true; se conserva el respaldo válido.');
+    // creds.update volverá a programar la subida cuando lleguen las credenciales finales.
     return false;
   }
 
@@ -599,6 +615,21 @@ async function uploadEncryptedSession() {
         ? await currentFileResponse.json().catch(() => null)
         : null;
       if (existingFile?.content) {
+        // Solo respaldar el archivo principal si contiene una sesión ya vinculada.
+        // Un session.enc incompleto jamás debe pisar el último respaldo bueno.
+        let existingSessionIsRegistered = false;
+        try {
+          const encryptedExisting = Buffer.from(existingFile.content.replace(/\\n/g, ''), 'base64').toString('utf8');
+          const filesExisting = JSON.parse(decryptSession(encryptedExisting));
+          const credsExisting = filesExisting['creds.json']
+            ? JSON.parse(Buffer.from(filesExisting['creds.json'], 'base64').toString('utf8'))
+            : null;
+          existingSessionIsRegistered = credsExisting?.registered === true;
+        } catch (validationError) {
+          console.warn('⚠️ No se usará session.enc como respaldo porque no se pudo validar:', validationError.message);
+        }
+
+        if (existingSessionIsRegistered) {
         const backupUrl = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + LAST_GOOD_SESSION_FILE + '?ref=' + encodeURIComponent(SESSION_BRANCH);
         const backupExisting = await githubRequest(backupUrl);
         let backupSha = null;
@@ -631,6 +662,9 @@ async function uploadEncryptedSession() {
         }
 
         console.log('🛡️ Última sesión válida respaldada antes de actualizar.');
+        } else {
+          console.warn('⏭️ No se reemplaza session.last-good.enc: session.enc no contiene una sesión vinculada válida.');
+        }
       }
     }
 
@@ -1655,32 +1689,6 @@ process.on('uncaughtException', error => {
 });
 
 
-// Reinicio único del socket después del arranque para evitar dejar una conexión
-// vieja/desincronizada viva después de un redeploy de Render.
-let startupSocketResetDone = false;
-function scheduleStartupSocketReset() {
-  setTimeout(async () => {
-    if (startupSocketResetDone || shuttingDown) return;
-    startupSocketResetDone = true;
-
-    if (connectionState !== 'conectado' || !sock) return;
-
-    console.log('🔄 Reinicio preventivo del socket después del deploy...');
-    try { sock?.ws?.close(); } catch {}
-    sock = null;
-    authState = null;
-    connectionState = 'desconectado';
-
-    try {
-      await startSocket(false);
-      console.log('✅ Socket reiniciado correctamente después del deploy.');
-    } catch (error) {
-      console.error('❌ No se pudo reiniciar el socket después del deploy:', error.message);
-      scheduleReconnect(null);
-    }
-  }, 15000);
-}
-
 async function gracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -1742,7 +1750,6 @@ app.listen(PORT, async () => {
 
       if (registered) {
         await startSocket(false);
-        scheduleStartupSocketReset();
       } else {
         // No dejar un socket colgado con credenciales de una vinculación
         // que nunca terminó. Limpiamos esa sesión incompleta para que
