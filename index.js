@@ -24,7 +24,7 @@ const execFileAsync = promisify(execFile);
 
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
-const { comandoDescargaSocial } = require('./descargasSociales');
+const { comandoDescargaSocial, liberarColaDescargas, estadoColaDescargas } = require('./descargasSociales');
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN?.trim();
@@ -1085,10 +1085,38 @@ async function handleMessage(update) {
   rememberActivity(message.key?.remoteJid, null);
   lastMessageProcessedAt = new Date().toISOString();
 
+  if (/^liberarcache$/i.test(text.trim())) {
+    const descargas = liberarColaDescargas();
+    const stickersCancelados = videoQueue.splice(0);
+    for (const job of stickersCancelados) {
+      job.reject(new Error('Solicitud cancelada por liberarcache.'));
+    }
+    if (typeof global.gc === 'function') {
+      try { global.gc(); } catch (_) {}
+    }
+    const estado = estadoColaDescargas();
+    const memoria = process.memoryUsage();
+    const mb = bytes => Math.round(bytes / 1024 / 1024);
+    return sendText(
+      message.key.remoteJid,
+      '🧹 *LIBERARCACHE*\\n\\n' +
+      '📥 Descargas pendientes canceladas: ' + descargas.pendientesCancelados + '\\n' +
+      '🎬 Stickers de video pendientes cancelados: ' + stickersCancelados.length + '\\n' +
+      '⏳ Descarga activa: ' + (estado.descargaActiva ? 'sí (' + estado.segundosActiva + ' s)' : 'no') + '\\n' +
+      '📦 Descargas pendientes restantes: ' + estado.pendientes + '\\n' +
+      '🧠 RAM usada: ' + mb(memoria.heapUsed) + ' MB heap; ' + mb(memoria.rss) + ' MB total\\n' +
+      (typeof global.gc === 'function'
+        ? '✅ Recolección de memoria solicitada.'
+        : 'ℹ️ La recolección automática de memoria sigue activa; este proceso no permite forzarla.') + '\\n\\n' +
+      'Nota: no se borra la sesión ni la memoria persistente. Si una descarga activa está bloqueada, tiene un límite de tiempo y no se cancela a la fuerza.',
+      message
+    );
+  }
+
   if (/^(menu|ayuda|help)$/i.test(text)) {
     return sendText(
       message.key.remoteJid,
-      '🤖 *el mejor bot*\n\n📸 Imagen + *sticker*\n🎥 Video + *sticker*\n⬇️ *tiktok enlace*, *instagram enlace* o *x enlace* para descargar videos públicos.\n↩️ También puedes responder una imagen o video con *sticker*.',
+      '🤖 *el mejor bot*\n\n📸 Imagen + *sticker*\n🎥 Video + *sticker*\n⬇️ *tiktok enlace*, *instagram enlace* o *x enlace* para descargar videos públicos.\n🧹 *liberarcache* para limpiar colas pendientes y revisar procesos.\n↩️ También puedes responder una imagen o video con *sticker*.',
       message
     );
   }
