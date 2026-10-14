@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extraerUrl, analizarSolicitudDescarga, detectarPlataforma, tipoMimetype, tipoEnvioWhatsApp, descargaDirecta, createMediaSizeLimiter, MAX_MEDIA_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_VIDEO_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
+const { extraerUrl, analizarSolicitudDescarga, detectarPlataforma, tipoMimetype, tipoEnvioWhatsApp, crearCaptionDescarga, esErrorSinVideoInstagram, descargaDirecta, createMediaSizeLimiter, MAX_MEDIA_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_VIDEO_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
 const { inspectWebpAnimation, parseMediaSizeBytes } = require('../stickerUtils');
 const { validateSessionSnapshot } = require('../sessionUtils');
 
@@ -63,6 +63,25 @@ test('no confunde URLs desnudas con comandos de plataforma', () => {
   assert.deepEqual(analizarSolicitudDescarga('Mira este video: https://cdn.example.org/video.mp4'), {
     tipo: 'url', plataforma: 'auto', enlace: 'https://cdn.example.org/video.mp4'
   });
+});
+
+test('maneja publicaciones de Instagram sin video y genera captions sin referencia temporal inválida', () => {
+  assert.equal(esErrorSinVideoInstagram(new Error('[Instagram] Dec8zlJo30Z: There is no video in this post')), true);
+  assert.equal(esErrorSinVideoInstagram(new Error('No video formats found!')), true);
+  assert.equal(esErrorSinVideoInstagram(new Error('HTTP 403 login required')), false);
+
+  assert.equal(
+    crearCaptionDescarga({ tipo: 'video' }, 'document', 0, 1),
+    '✅ Video descargado; se envía como documento para evitar límites de multimedia.'
+  );
+  assert.equal(
+    crearCaptionDescarga({ tipo: 'image' }, 'document', 0, 1),
+    '✅ Imagen descargada; se envía como documento para conservar el archivo original.'
+  );
+  assert.equal(
+    crearCaptionDescarga({ tipo: 'video' }, 'video', 1, 3),
+    '✅ Archivo 2 de 3 descargado.'
+  );
 });
 
 test('asigna MIME de vídeo a los formatos soportados y documento a MPEG-TS', () => {
