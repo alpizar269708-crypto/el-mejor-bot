@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extraerUrl, analizarSolicitudDescarga, detectarPlataforma, tipoMimetype, descargaDirecta, MAX_MEDIA_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
+const { extraerUrl, analizarSolicitudDescarga, detectarPlataforma, tipoMimetype, tipoEnvioWhatsApp, MAX_MEDIA_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_VIDEO_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
 const { inspectWebpAnimation, parseMediaSizeBytes } = require('../stickerUtils');
 const { validateSessionSnapshot } = require('../sessionUtils');
 
@@ -69,6 +69,16 @@ test('asigna MIME de vídeo a los formatos soportados y documento a MPEG-TS', ()
   assert.equal(tipoMimetype('.flv', 'video/x-flv'), 'video');
   assert.equal(tipoMimetype('.mpeg', 'video/mpeg'), 'video');
   assert.equal(tipoMimetype('.ts', 'video/mp2t'), 'document');
+});
+
+test('envía los medios que rebasan límites comunes como documento y no los comprime como stickers', () => {
+  assert.equal(MAX_INLINE_IMAGE_BYTES, 16_000_000);
+  assert.equal(MAX_INLINE_VIDEO_BYTES, 64_000_000);
+  assert.equal(tipoEnvioWhatsApp({ tipo: 'image', size: 1_000_000 }), 'image');
+  assert.equal(tipoEnvioWhatsApp({ tipo: 'image', size: MAX_INLINE_IMAGE_BYTES + 1 }), 'document');
+  assert.equal(tipoEnvioWhatsApp({ tipo: 'video', size: 64_000_000 }), 'video');
+  assert.equal(tipoEnvioWhatsApp({ tipo: 'video', size: MAX_INLINE_VIDEO_BYTES + 1 }), 'document');
+  assert.equal(tipoEnvioWhatsApp({ tipo: 'other', size: 1 }), 'document');
 });
 
 test('acepta enlaces públicos genéricos y dominios sin protocolo', () => {
