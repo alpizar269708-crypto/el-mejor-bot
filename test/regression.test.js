@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extraerUrl, analizarSolicitudDescarga, detectarPlataforma, tipoMimetype, tipoEnvioWhatsApp, crearCaptionDescarga, esErrorSinVideoInstagram, extraerUrlsImagenInstagram, extraerUrlsImagenGalleryDl, extraerShortcodeInstagram, extraerUrlsImagenInstagramDesdeJson, descargaDirecta, createMediaSizeLimiter, MAX_MEDIA_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_VIDEO_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
+const { extraerUrl, analizarSolicitudDescarga, detectarPlataforma, tipoMimetype, tipoEnvioWhatsApp, crearCaptionDescarga, esErrorSinVideoInstagram, extraerUrlsImagenInstagram, extraerUrlsImagenGalleryDl, extraerShortcodeInstagram, crearUrlsEmbedInstagram, extraerUrlsImagenInstagramDesdeJson, descargaDirecta, createMediaSizeLimiter, MAX_MEDIA_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_VIDEO_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
 const { inspectWebpAnimation, parseMediaSizeBytes } = require('../stickerUtils');
 const { validateSessionSnapshot } = require('../sessionUtils');
 
@@ -101,6 +101,25 @@ test('extrae el shortcode de publicaciones, reels y videos de Instagram', () => 
   assert.equal(extraerShortcodeInstagram('https://www.instagram.com/tv/GhI789/'), 'GhI789');
   assert.equal(extraerShortcodeInstagram('https://example.com/p/AbC_123/'), null);
   assert.equal(extraerShortcodeInstagram('https://www.instagram.com/username/'), null);
+});
+
+test('construye URLs de inserción pública para posts, reels y enlaces sin autenticación', () => {
+  assert.deepEqual(
+    crearUrlsEmbedInstagram('https://www.instagram.com/p/AbC_123/'),
+    [
+      'https://www.instagram.com/p/AbC_123/embed/captioned/',
+      'https://www.instagram.com/reel/AbC_123/embed/captioned/'
+    ]
+  );
+  assert.deepEqual(
+    crearUrlsEmbedInstagram('https://www.instagram.com/reels/DeF456/?igsh=abc'),
+    [
+      'https://www.instagram.com/reel/DeF456/embed/captioned/',
+      'https://www.instagram.com/p/DeF456/embed/captioned/'
+    ]
+  );
+  assert.deepEqual(crearUrlsEmbedInstagram('https://example.com/p/AbC_123/'), []);
+  assert.deepEqual(crearUrlsEmbedInstagram('https://www.instagram.com/username/'), []);
 });
 
 test('extrae solo fotos originales del JSON GraphQL público y omite miniaturas de video', () => {
