@@ -42,36 +42,53 @@ function liberarColaDescargas() {
 }
 
 function extraerUrl(texto, plataforma) {
-  const hosts = {
-    tiktok: /(?:www\.)?(?:tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)/i,
-    instagram: /(?:www\.)?instagram\.com/i,
-    x: /(?:www\.)?(?:x\.com|twitter\.com|t\.co)/i
+  const patrones = {
+    tiktok: /(?:^|\.)(?:tiktok\.com)$/i,
+    instagram: /(?:^|\.)instagram\.com$/i,
+    x: /(?:^|\.)(?:x\.com|twitter\.com|t\.co)$/i,
+    pinterest: /(?:^|\.)(?:pinterest\.[a-z.]+|pin\.it)$/i,
+    facebook: /(?:^|\.)(?:facebook\.com|fb\.watch|fb\.com)$/i,
+    reddit: /(?:^|\.)(?:reddit\.com|redd\.it)$/i,
+    threads: /(?:^|\.)threads\.net$/i
   };
-  const host = hosts[plataforma];
-  if (!host) return null;
-  const coincidencias = String(texto || '').match(/https?:\/\/[^\s<>]+|(?:www\.)?(?:tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com|instagram\.com|x\.com|twitter\.com|t\.co)\/[^\s<>]+/gi) || [];
+  const patron = patrones[plataforma];
+  if (!patron) return null;
+  const coincidencias = String(texto || '').match(/https?:\/\/[^\s<>]+|(?:www\.)?[a-z0-9.-]+\.[a-z]{2,}(?:\/[^\s<>]*)?/gi) || [];
   for (let valor of coincidencias) {
     valor = valor.replace(/[),.;!?]+$/g, '');
     if (!/^https?:\/\//i.test(valor)) valor = 'https://' + valor;
     try {
       const url = new URL(valor);
-      if (!host.test(url.hostname)) continue;
-      if (plataforma === 'tiktok' && !/(^|\.)tiktok\.com$/i.test(url.hostname)) continue;
-      if (plataforma === 'instagram' && !/(^|\.)instagram\.com$/i.test(url.hostname)) continue;
-      if (plataforma === 'x' && !/(^|\.)(?:x\.com|twitter\.com|t\.co)$/i.test(url.hostname)) continue;
-      return url.toString();
+      const host = url.hostname.toLowerCase().replace(/^www\./, '');
+      const valido = plataforma === 'tiktok'
+        ? /(^|\.)tiktok\.com$/.test(host)
+        : plataforma === 'instagram'
+          ? /(^|\.)instagram\.com$/.test(host)
+          : plataforma === 'x'
+            ? /(^|\.)(?:x\.com|twitter\.com|t\.co)$/.test(host)
+            : plataforma === 'pinterest'
+              ? /(^|\.)(?:pinterest\.[a-z.]+|pin\.it)$/.test(host)
+              : plataforma === 'facebook'
+                ? /(^|\.)(?:facebook\.com|fb\.watch|fb\.com)$/.test(host)
+                : plataforma === 'reddit'
+                  ? /(^|\.)(?:reddit\.com|redd\.it)$/.test(host)
+                  : plataforma === 'threads'
+                    ? /(^|\.)threads\.net$/.test(host)
+                    : patron.test(host);
+      if (valido) return url.toString();
     } catch (_) {}
   }
   return null;
 }
-
 async function descargarArchivos(url, plataforma) {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'social-download-'));
   const output = path.join(tempDir, '%(autonumber)03d.%(ext)s');
   const opcionesBase = {
     output,
     noWarnings: true,
-    noPlaylist: plataforma !== 'instagram',
+    noPlaylist: !['instagram', 'pinterest', 'tiktok'].includes(plataforma),
+    playlistEnd: 10,
+    maxDownloads: 10,
     socketTimeout: 30,
     retries: 3,
     fragmentRetries: 3,
@@ -93,13 +110,12 @@ async function descargarArchivos(url, plataforma) {
   };
 
   try {
-    // Primero intentamos la mejor calidad de video. Las publicaciones de Instagram
-    // que son solo fotos no tienen pistas de video; para ellas reintentamos sin
-    // selector de video y descargamos las imágenes/carousel que entregue yt-dlp.
+    // Primero intentamos la mejor calidad de video. Si el enlace es una publicación
+    // de fotos/carrusel, reintentamos sin selector de video para recuperar imágenes.
     try {
       await youtubedl(url, opcionesVideo, { timeout: TIMEOUT_MS });
     } catch (errorVideo) {
-      if (plataforma !== 'instagram') throw errorVideo;
+      if (!['instagram', 'tiktok', 'pinterest', 'facebook', 'reddit', 'threads', 'x'].includes(plataforma)) throw errorVideo;
       await fs.promises.rm(tempDir, { recursive: true, force: true });
       await fs.promises.mkdir(tempDir, { recursive: true });
       await youtubedl(url, opcionesBase, { timeout: TIMEOUT_MS });
@@ -111,7 +127,7 @@ async function descargarArchivos(url, plataforma) {
 
     // Algunos extractores no fallan con el selector de video, pero tampoco
     // generan archivos (caso típico de publicaciones de solo fotos).
-    if (!nombres.length && plataforma === 'instagram') {
+    if (!nombres.length && ['instagram', 'tiktok', 'pinterest', 'facebook', 'reddit', 'threads', 'x'].includes(plataforma)) {
       await youtubedl(url, opcionesBase, { timeout: TIMEOUT_MS });
       nombres = (await fs.promises.readdir(tempDir))
         .filter(nombre => /\.(?:mp4|m4v|mov|webm|jpe?g|png|webp|avif)$/i.test(nombre))
@@ -148,7 +164,7 @@ async function descargarArchivos(url, plataforma) {
 
 async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma) {
   const url = extraerUrl(texto, plataforma);
-  const nombre = { tiktok: 'TikTok', instagram: 'Instagram', x: 'X' }[plataforma] || plataforma;
+  const nombre = { tiktok: 'TikTok', instagram: 'Instagram', x: 'X', pinterest: 'Pinterest', facebook: 'Facebook', reddit: 'Reddit', threads: 'Threads' }[plataforma] || plataforma;
   if (!url) {
     await sock.sendMessage(chatId, {
       text: '⚠️ Envíame un enlace público válido de ' + nombre + '. Ejemplo: ' + plataforma + ' https://...'
