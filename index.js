@@ -24,6 +24,7 @@ const execFileAsync = promisify(execFile);
 
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
+const { comandoDescargaSocial } = require('./descargasSociales');
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN?.trim();
@@ -1090,6 +1091,13 @@ async function handleMessage(update) {
       '🤖 *el mejor bot*\n\n📸 Imagen + *sticker*\n🎥 Video + *sticker*\n↩️ También puedes responder una imagen o video con *sticker*.',
       message
     );
+  }
+
+  const socialMatch = text.trim().match(/^(tiktok|instagram)\b/i);
+  if (socialMatch) {
+    const plataforma = socialMatch[1].toLowerCase();
+    const argumentos = text.trim().replace(/^(tiktok|instagram)\b/i, '').trim();
+    return comandoDescargaSocial(sock, message.key.remoteJid, message, argumentos, plataforma);
   }
 
   if (!isStickerCommand(text)) return;
