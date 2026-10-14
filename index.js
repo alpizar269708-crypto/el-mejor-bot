@@ -1195,7 +1195,10 @@ async function createFastVideoSticker(buffer, duration) {
     { fps: 12, quality: 55, duration: actualDuration },
     { fps: 10, quality: 45, duration: actualDuration },
     { fps: 8, quality: 38, duration: actualDuration },
-    { fps: 6, quality: 30, duration: Math.min(actualDuration, 8) }
+    { fps: 6, quality: 30, duration: Math.min(actualDuration, 8) },
+    { fps: 5, quality: 25, duration: Math.min(actualDuration, 8) },
+    { fps: 4, quality: 20, duration: Math.min(actualDuration, 6) },
+    { fps: 3, quality: 15, duration: Math.min(actualDuration, 5) }
   ];
   let lastError = null;
 
@@ -1211,7 +1214,7 @@ async function createFastVideoSticker(buffer, duration) {
 
       if (result.length <= MAX_ANIMATED_STICKER_BYTES) return result;
       lastError = new Error('El WebP animado pesa ' + Math.ceil(result.length / 1024) + ' KB (límite interno: 450 KB).');
-      console.warn('⚠️ Sticker demasiado pesado; reintentando con menor FPS/calidad (' + (index + 2) + '/4).');
+      console.warn('⚠️ Sticker demasiado pesado; reintentando con menor FPS/calidad (' + (index + 2) + '/' + attempts.length + ').');
     } catch (error) {
       lastError = error;
       console.warn('⚠️ Intento de sticker animado ' + (index + 1) + '/4: ' + error.message);
@@ -1219,7 +1222,7 @@ async function createFastVideoSticker(buffer, duration) {
   }
 
   throw new Error(
-    'No se pudo generar un sticker animado válido de menos de 450 KB tras 4 intentos. ' +
+    'No se pudo generar un sticker animado válido de menos de 450 KB tras ' + attempts.length + ' intentos. ' +
     (lastError?.message || 'Error de conversión desconocido.')
   );
 }
@@ -1288,7 +1291,7 @@ async function createStickerWork(message, sourceMessage, mediaType) {
     let stickerBuffer = null;
     let lastSize = 0;
 
-    for (const quality of [85, 75, 65, 55, 45, 35]) {
+    for (const quality of [85, 75, 65, 55, 45, 35, 25, 18, 12, 8]) {
       const sticker = new Sticker(buffer, {
         pack: 'el mejor bot',
         author: 'el mejor bot',
@@ -1310,7 +1313,7 @@ async function createStickerWork(message, sourceMessage, mediaType) {
     }
 
     if (!stickerBuffer) {
-      throw new Error('La imagen no cabe en el límite de 95 KB para stickers estáticos (último intento: ' + Math.ceil(lastSize / 1024) + ' KB).');
+      throw new Error('La imagen no cabe en el límite de 95 KB para stickers estáticos tras 10 niveles de compresión (último intento: ' + Math.ceil(lastSize / 1024) + ' KB).');
     }
 
     buffer = null;
