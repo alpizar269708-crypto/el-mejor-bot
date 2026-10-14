@@ -26,3 +26,11 @@ jobs:
         run: npm run check
       - name: Run regression tests
         run: npm test
+
+  container-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Build VPS container
+        run: docker build --tag el-mejor-bot:ci .
