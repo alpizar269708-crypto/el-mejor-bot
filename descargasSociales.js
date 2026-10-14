@@ -86,7 +86,9 @@ async function descargarArchivos(url, plataforma) {
   const opcionesBase = {
     output,
     noWarnings: true,
-    noPlaylist: !['instagram', 'pinterest', 'tiktok'].includes(plataforma),
+    // youtube-dl-exec convierte `noPlaylist: false` en la opción inválida --no-no-playlist.
+    // Para Instagram/TikTok/Pinterest omitimos la opción y permitimos carruseles.
+    ...(!['instagram', 'pinterest', 'tiktok'].includes(plataforma) ? { noPlaylist: true } : {}),
     playlistEnd: 10,
     maxDownloads: 10,
     socketTimeout: 30,
