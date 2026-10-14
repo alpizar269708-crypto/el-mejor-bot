@@ -219,7 +219,10 @@ function analizarSolicitudDescarga(texto) {
     };
   }
 
-  const isBareUrl = /^(?:https?:\/\/)?(?:[a-z0-9.-]+)(?::\d{1,5})?(?:[/?#][^\s]*)?$/i.test(trimmed);
+  // Un mensaje de una palabra ("hola", "gracias", etc.) no es una URL.
+  // Exigir al menos un punto en el host evita que el detector active descargas
+  // por texto normal, sin afectar dominios o enlaces de plataformas conocidos.
+  const isBareUrl = /^(?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d{1,5})?(?:[/?#][^\s]*)?$/i.test(trimmed);
   if (isBareUrl) {
     return { tipo: 'url', plataforma: 'auto', enlace: trimmed };
   }
@@ -539,8 +542,39 @@ function extraerUrlsImagenInstagram(html) {
   return candidates.slice(0, MAX_MEDIA_FILES);
 }
 
+function extraerUrlsImagenGalleryDl(output) {
+  const candidates = [];
+  const seen = new Set();
+
+  for (const line of String(output || '').split(/\r?\n/)) {
+    const raw = line.trim().replace(/^["']|["']$/g, '');
+    if (!/^https?:\/\//i.test(raw)) continue;
+    const url = normalizarUrl(raw);
+    if (!url) continue;
+
+    const host = url.hostname.toLowerCase().replace(/^www\./, '');
+    const trustedImageHost =
+      host === 'instagram.com' || host.endsWith('.instagram.com') ||
+      host === 'cdninstagram.com' || host.endsWith('.cdninstagram.com') ||
+      host === 'fbcdn.net' || host.endsWith('.fbcdn.net');
+    const extension = path.extname(url.pathname).toLowerCase();
+    if (!trustedImageHost || !INSTAGRAM_IMAGE_EXTENSIONS.has(extension)) continue;
+
+    const normalized = url.toString();
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    candidates.push(normalized);
+    if (candidates.length >= MAX_MEDIA_FILES) break;
+  }
+
+  return candidates;
+}
+
 async function descargarImagenesInstagramConGalleryDl(urlInicial, tempDir) {
-  if (!fs.existsSync(GALLERY_DL_PATH)) return [];
+  if (!fs.existsSync(GALLERY_DL_PATH)) {
+    console.warn('⚠️ gallery-dl no está instalado; se probará el acceso público directo a Instagram.');
+    return [];
+  }
 
   let cookiesPath = null;
   const encodedCookies = process.env.INSTAGRAM_COOKIES_B64?.trim();
@@ -558,41 +592,76 @@ async function descargarImagenesInstagramConGalleryDl(urlInicial, tempDir) {
     await fs.promises.writeFile(cookiesPath, cookies, { mode: 0o600, flag: 'wx' });
   }
 
-  const args = [
+  const argsBase = [
     '--no-input',
     '--range', '1-' + MAX_MEDIA_FILES,
-    '--directory', tempDir,
     '--filesize-max', '100M',
     '--http-timeout', '25',
     '--retries', '2'
   ];
-  if (cookiesPath) args.push('--cookies', cookiesPath);
-  args.push(urlInicial);
+  if (cookiesPath) argsBase.push('--cookies', cookiesPath);
 
   try {
-    await execFileAsync(GALLERY_DL_PATH, args, {
-      timeout: GALLERY_DL_TIMEOUT_MS,
-      maxBuffer: 2 * 1024 * 1024,
-      windowsHide: true
-    });
-  } catch (error) {
-    // gallery-dl puede devolver código distinto de cero si Instagram bloquea
-    // el acceso anónimo aunque haya descargado algún archivo. Se inspeccionan
-    // los resultados antes de decidir si usar otro fallback.
-    const detail = String(error?.stderr || error?.message || error || '')
-      .replace(/\s+/g, ' ').trim().slice(0, 300);
-    console.warn('⚠️ gallery-dl no pudo completar la galería de Instagram:', detail);
+    // Pedir primero las URLs originales a gallery-dl y bajarlas con nuestro
+    // cliente streaming. Así no dependemos de cómo versiona/nombra sus archivos.
+    let galleryOutput = '';
+    try {
+      const result = await execFileAsync(
+        GALLERY_DL_PATH,
+        [...argsBase, '--get-urls', urlInicial],
+        { timeout: GALLERY_DL_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024, windowsHide: true }
+      );
+      galleryOutput = result?.stdout || '';
+    } catch (error) {
+      galleryOutput = error?.stdout || '';
+      const detail = String(error?.stderr || error?.message || error || '')
+        .replace(/\s+/g, ' ').trim().slice(0, 300);
+      console.warn('⚠️ gallery-dl no pudo resolver las imágenes de Instagram:', detail);
+    }
+
+    const imageUrls = extraerUrlsImagenGalleryDl(galleryOutput);
+    const files = [];
+    for (const imageUrl of imageUrls) {
+      try {
+        const file = await descargaDirecta(
+          imageUrl,
+          tempDir,
+          files.length + 1,
+          { Referer: 'https://www.instagram.com/' }
+        );
+        if (file.tipo === 'image') files.push(file);
+        else await fs.promises.rm(file.path, { force: true }).catch(() => {});
+      } catch (error) {
+        console.warn('⚠️ No se pudo descargar una imagen de Instagram:', String(error?.message || error).slice(0, 180));
+      }
+      if (files.length >= MAX_MEDIA_FILES) break;
+    }
+    if (files.length) return files;
+
+    // Segunda alternativa: dejar que gallery-dl gestione la descarga.
+    // Se mantiene aunque la fase de resolución directa no haya devuelto URLs.
+    try {
+      await execFileAsync(
+        GALLERY_DL_PATH,
+        [...argsBase, '--directory', tempDir, urlInicial],
+        { timeout: GALLERY_DL_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024, windowsHide: true }
+      );
+    } catch (error) {
+      const detail = String(error?.stderr || error?.message || error || '')
+        .replace(/\s+/g, ' ').trim().slice(0, 300);
+      console.warn('⚠️ gallery-dl no pudo descargar la galería de Instagram:', detail);
+    }
+
+    const downloaded = await listarArchivosMedia(tempDir);
+    const images = downloaded.filter(file => file.tipo === 'image').slice(0, MAX_MEDIA_FILES);
+    const nonImages = downloaded.filter(file => file.tipo !== 'image');
+    for (const file of nonImages) {
+      await fs.promises.rm(file.path, { force: true }).catch(() => {});
+    }
+    return images;
   } finally {
     if (cookiesPath) await fs.promises.rm(cookiesPath, { force: true }).catch(() => {});
   }
-
-  const downloaded = await listarArchivosMedia(tempDir);
-  const images = downloaded.filter(file => file.tipo === 'image').slice(0, MAX_MEDIA_FILES);
-  const nonImages = downloaded.filter(file => file.tipo !== 'image');
-  for (const file of nonImages) {
-    await fs.promises.rm(file.path, { force: true }).catch(() => {});
-  }
-  return images;
 }
 
 async function descargarImagenesInstagram(urlInicial, tempDir) {
@@ -972,6 +1041,7 @@ module.exports = {
   crearCaptionDescarga,
   esErrorSinVideoInstagram,
   extraerUrlsImagenInstagram,
+  extraerUrlsImagenGalleryDl,
   descargarImagenesInstagram,
   descargarImagenesInstagramConGalleryDl,
   comandoDescargaSocial,
