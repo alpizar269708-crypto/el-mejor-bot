@@ -3,7 +3,7 @@ services:
     name: el-mejor-bot
     runtime: node
     plan: free
-    buildCommand: "YOUTUBE_DL_HOST=https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux npm install --no-audit --no-fund"
+    buildCommand: "YOUTUBE_DL_HOST=https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux npm install --no-audit --no-fund && python3 -m venv .venv-gallery-dl && .venv-gallery-dl/bin/python -m pip install --disable-pip-version-check --no-cache-dir gallery-dl==1.32.16"
     startCommand: npm start
     envVars:
       - key: PORT
