@@ -516,6 +516,81 @@ function extraerUrlsImagenInstagramDesdeJson(payload) {
   return extraerUrlsImagenGalleryDl(rawUrls.join('\n')).slice(0, MAX_MEDIA_FILES);
 }
 
+function crearUrlsEmbedInstagram(urlInicial) {
+  const url = normalizarUrl(urlInicial);
+  if (!url || detectarPlataforma(url) !== 'instagram') return [];
+  const match = url.pathname.match(/^\/(p|reel|reels|tv)\/([A-Za-z0-9_-]+)/i);
+  if (!match) return [];
+
+  const shortcode = match[2];
+  const originalType = match[1].toLowerCase() === 'reels' ? 'reel' : match[1].toLowerCase();
+  const types = [...new Set([originalType, 'p', 'reel'])];
+  return types.map(type => 'https://www.instagram.com/' + type + '/' + shortcode + '/embed/captioned/');
+}
+
+async function descargarImagenesInstagramEmbedPublico(urlInicial, tempDir) {
+  const embedUrls = crearUrlsEmbedInstagram(urlInicial);
+  if (!embedUrls.length) return [];
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 22000);
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/json',
+    'Accept-Language': 'en-US,en;q=0.9,es;q=0.8'
+  };
+  const seen = new Set();
+  const files = [];
+
+  try {
+    for (const embedUrl of embedUrls) {
+      let response = null;
+      try {
+        response = await fetch(embedUrl, {
+          redirect: 'follow',
+          signal: controller.signal,
+          headers
+        });
+        if (!response.ok) continue;
+        const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+        if (contentType && !contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) {
+          continue;
+        }
+        const html = (await response.text()).slice(0, 8_000_000);
+        const imageUrls = extraerUrlsImagenInstagram(html);
+        for (const imageUrl of imageUrls) {
+          if (seen.has(imageUrl)) continue;
+          seen.add(imageUrl);
+          try {
+            const file = await descargaDirecta(
+              imageUrl,
+              tempDir,
+              files.length + 1,
+              { Referer: embedUrl }
+            );
+            if (file.tipo === 'image') files.push(file);
+            else await fs.promises.rm(file.path, { force: true }).catch(() => {});
+          } catch (error) {
+            console.warn('⚠️ No se pudo descargar una imagen del embed público de Instagram:', String(error?.message || error).slice(0, 160));
+          }
+          if (files.length >= MAX_MEDIA_FILES) return files;
+        }
+      } catch (error) {
+        if (controller.signal.aborted) throw error;
+        console.warn('⚠️ No se pudo consultar el embed público de Instagram:', String(error?.message || error).slice(0, 160));
+      } finally {
+        try { if (response?.body && !response.bodyUsed) await response.body.cancel(); } catch {}
+      }
+    }
+    return files;
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('La consulta del embed público de Instagram superó los 22 segundos.');
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function descargarImagenesInstagramGraphqlPublico(urlInicial, tempDir) {
   const shortcode = extraerShortcodeInstagram(urlInicial);
   if (!shortcode) return [];
@@ -547,46 +622,79 @@ async function descargarImagenesInstagramGraphqlPublico(urlInicial, tempDir) {
     const csrfCookie = cookieParts.find(value => /^csrftoken=/i.test(value));
     const csrf = csrfCookie?.slice(csrfCookie.indexOf('=') + 1);
     if (!csrf) throw new Error('Instagram no entregó el token necesario para consultar una publicación pública.');
+    // Reutilizar todas las cookies anónimas que entrega la página principal, no solo csrftoken.
+    const anonymousCookieHeader = cookieParts.join('; ');
     try { await home.body?.cancel(); } catch {}
 
     const variables = {
       shortcode,
       __relay_internal__pv__PolarisAIGMMediaWebLabelEnabledrelayprovider: false
     };
-    graph = await fetch('https://www.instagram.com/graphql/query', {
-      method: 'POST',
-      redirect: 'follow',
-      signal: controller.signal,
-      headers: {
-        ...headersBase,
-        Accept: '*/*',
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Origin: 'https://www.instagram.com',
-        Referer: 'https://www.instagram.com/',
-        'X-CSRFToken': csrf,
-        'X-IG-App-ID': INSTAGRAM_PUBLIC_APP_ID,
-        Cookie: csrfCookie
-      },
-      body: new URLSearchParams({
-        doc_id: INSTAGRAM_PUBLIC_POST_QUERY_ID,
-        variables: JSON.stringify(variables)
-      }).toString()
-    });
-    if (!graph.ok) throw new Error('La consulta pública de Instagram respondió HTTP ' + graph.status + '.');
+    let payload = null;
+    let imageUrls = [];
+    let lastApiError = null;
 
-    let payload;
-    try {
-      payload = await graph.json();
-    } catch {
-      throw new Error('Instagram devolvió una respuesta pública que no es JSON válido.');
+    // Instagram devuelve ocasionalmente data:null aunque la respuesta sea HTTP 200.
+    // Reintentar solo respuestas GraphQL vacías/errores de ejecución; no insistir en rate limits.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      graph = await fetch('https://www.instagram.com/graphql/query', {
+        method: 'POST',
+        redirect: 'follow',
+        signal: controller.signal,
+        headers: {
+          ...headersBase,
+          Accept: '*/*',
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Origin: 'https://www.instagram.com',
+          Referer: 'https://www.instagram.com/',
+          'X-CSRFToken': csrf,
+          'X-IG-App-ID': INSTAGRAM_PUBLIC_APP_ID,
+          'X-FB-Friendly-Name': 'PolarisPostRootQuery',
+          'X-Requested-With': 'XMLHttpRequest',
+          Cookie: anonymousCookieHeader
+        },
+        body: new URLSearchParams({
+          doc_id: INSTAGRAM_PUBLIC_POST_QUERY_ID,
+          variables: JSON.stringify(variables)
+        }).toString()
+      });
+
+      if (graph.status === 429) {
+        throw new Error('Instagram limitó las consultas públicas (HTTP 429).');
+      }
+      if (!graph.ok) {
+        const status = graph.status;
+        try { await graph.body?.cancel(); } catch {}
+        if (attempt < 3 && status >= 500) {
+          await new Promise(resolve => setTimeout(resolve, attempt * 650));
+          continue;
+        }
+        throw new Error('La consulta pública de Instagram respondió HTTP ' + status + '.');
+      }
+
+      try {
+        payload = await graph.json();
+      } catch {
+        throw new Error('Instagram devolvió una respuesta pública que no es JSON válido.');
+      }
+
+      imageUrls = extraerUrlsImagenInstagramDesdeJson(payload);
+      if (imageUrls.length) break;
+
+      const firstError = Array.isArray(payload?.errors) ? payload.errors[0] : null;
+      lastApiError = firstError?.description || firstError?.message || firstError?.summary || null;
+      const rateLimited = String(firstError?.message || '') + ' ' + String(firstError?.code || '');
+      if (/rate.?limit|1675004|429/i.test(rateLimited)) {
+        throw new Error('Instagram limitó las consultas públicas; se usarán las alternativas anónimas restantes.');
+      }
+      if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 650));
     }
-    const imageUrls = extraerUrlsImagenInstagramDesdeJson(payload);
+
     clearTimeout(timeout);
     if (!imageUrls.length) {
-      const apiError = Array.isArray(payload?.errors) ? payload.errors[0]?.message : null;
-      throw new Error(apiError
-        ? 'Instagram no entregó fotos para esta publicación: ' + String(apiError).slice(0, 150)
-        : 'La API pública de Instagram no devolvió fotos para esta publicación.');
+      throw new Error(lastApiError
+        ? 'Instagram no entregó fotos desde GraphQL: ' + String(lastApiError).slice(0, 150)
+        : 'La API pública de Instagram no devolvió fotos para esta publicación después de 3 intentos.');
     }
 
     const files = [];
@@ -817,7 +925,16 @@ async function descargarImagenesInstagram(urlInicial, tempDir) {
     console.warn('⚠️ La consulta anónima de Instagram no resolvió las fotos:', String(error?.message || error).slice(0, 220));
   }
 
-  // gallery-dl queda como segunda alternativa; algunas solicitudes públicas siguen funcionando.
+  // El endpoint público de inserción suele exponer la miniatura/fotos aun cuando la
+  // página normal del post redirige al login. No usa cookies de una cuenta.
+  try {
+    const embedFiles = await descargarImagenesInstagramEmbedPublico(pageUrl.toString(), tempDir);
+    if (embedFiles.length) return embedFiles;
+  } catch (error) {
+    console.warn('⚠️ No se pudo usar el embed público de Instagram:', String(error?.message || error).slice(0, 220));
+  }
+
+  // gallery-dl queda como alternativa adicional; algunas solicitudes públicas siguen funcionando.
   try {
     const galleryFiles = await descargarImagenesInstagramConGalleryDl(pageUrl.toString(), tempDir);
     if (galleryFiles.length) return galleryFiles;
@@ -1190,8 +1307,10 @@ module.exports = {
   extraerUrlsImagenInstagram,
   extraerUrlsImagenGalleryDl,
   extraerShortcodeInstagram,
+  crearUrlsEmbedInstagram,
   extraerUrlsImagenInstagramDesdeJson,
   descargarImagenesInstagramGraphqlPublico,
+  descargarImagenesInstagramEmbedPublico,
   descargarImagenesInstagram,
   descargarImagenesInstagramConGalleryDl,
   comandoDescargaSocial,
