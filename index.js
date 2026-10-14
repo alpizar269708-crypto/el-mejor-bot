@@ -1684,6 +1684,8 @@ async function startSocketInternal(restoreSession = true) {
       ) {
         sessionRecoveryFailures += 1;
         const recoveryGeneration = ++socketGeneration;
+        clearTimeout(uploadTimer);
+        uploadAgain = false;
         console.error('🚪 WhatsApp rechazó la sesión (LOGGED OUT / BAD SESSION). Se comprobarán las copias cifradas.');
         qrDataUrl = null;
         pairingCode = null;
@@ -1694,6 +1696,8 @@ async function startSocketInternal(restoreSession = true) {
 
         await Promise.allSettled([...pendingCredentialWrites]);
         if (sessionUploadDone) await sessionUploadDone;
+        clearTimeout(uploadTimer);
+        uploadAgain = false;
         await sessionIoTail.catch(() => {});
         if (shuttingDown || recoveryGeneration !== socketGeneration) return;
 
