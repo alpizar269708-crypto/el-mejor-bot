@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { extraerUrl, analizarSolicitudDescarga, detectarPlataforma, tipoMimetype, tipoEnvioWhatsApp, crearCaptionDescarga, esErrorSinVideoInstagram, extraerUrlsImagenInstagram, extraerUrlsImagenGalleryDl, extraerShortcodeInstagram, crearUrlsEmbedInstagram, extraerUrlsImagenInstagramDesdeJson, descargaDirecta, createMediaSizeLimiter, MAX_MEDIA_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_VIDEO_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
-const { inspectWebpAnimation, parseMediaSizeBytes } = require('../stickerUtils');
+const { inspectWebpAnimation, parseMediaSizeBytes, parseFfmpegDurationSeconds, resolveStickerDurationSeconds, buildVideoStickerAttempts, MAX_ANIMATED_STICKER_BYTES } = require('../stickerUtils');
 const { validateSessionSnapshot } = require('../sessionUtils');
 
 function chunk(type, payload) {
@@ -414,6 +414,28 @@ test('rechaza dominios parecidos pero no auténticos', () => {
   assert.equal(extraerUrl('https://not-tiktok.com/@demo/video/1', 'tiktok'), null);
   assert.equal(extraerUrl('https://x.com.example.org/demo/status/1', 'x'), null);
   assert.equal(extraerUrl('https://example.com/p/abc', 'instagram'), null);
+});
+
+test('detecta la duración real de FFmpeg y no convierte videos cortos en stickers de 10 segundos', () => {
+  assert.equal(parseFfmpegDurationSeconds(
+    'Input #0, mov,mp4,m4a, Duration: 00:00:03.04, start: 0.000000, bitrate: 840 kb/s'
+  ), 3.04);
+  assert.equal(parseFfmpegDurationSeconds('Duration: N/A, start: 0.000000'), null);
+  assert.equal(resolveStickerDurationSeconds('Duration: 00:00:03.04, start: 0', 10), 3.04);
+  assert.equal(resolveStickerDurationSeconds('', 3), 3);
+  assert.equal(resolveStickerDurationSeconds('', 0), 3);
+  assert.equal(resolveStickerDurationSeconds('Duration: 00:00:19.75, start: 0', 8), 10);
+});
+
+test('prioriza fotogramas fluidos en stickers animados y mantiene la duración de clips cortos', () => {
+  const attempts = buildVideoStickerAttempts(3.04);
+  assert.ok(attempts.length >= 8);
+  assert.ok(attempts.every(attempt => attempt.fps >= 8), 'no debe degradar a 3–5 FPS');
+  assert.ok(attempts.every(attempt => attempt.duration === 3.04), 'un clip de 3 s no se alarga ni recorta');
+  assert.ok(attempts[0].fps >= 12, 'la primera opción debe priorizar fluidez');
+  assert.equal(MAX_ANIMATED_STICKER_BYTES, 480 * 1024);
+  assert.ok(MAX_ANIMATED_STICKER_BYTES < 500 * 1024);
+  assert.equal(buildVideoStickerAttempts(10).at(-1).duration, 4);
 });
 
 test('valida WebP animado cuando contiene ANIM y al menos dos ANMF', () => {
