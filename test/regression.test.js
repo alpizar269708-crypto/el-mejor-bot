@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extraerUrl, analizarSolicitudDescarga, detectarPlataforma, tipoMimetype, tipoEnvioWhatsApp, crearCaptionDescarga, esErrorSinVideoInstagram, descargaDirecta, createMediaSizeLimiter, MAX_MEDIA_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_VIDEO_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
+const { extraerUrl, analizarSolicitudDescarga, detectarPlataforma, tipoMimetype, tipoEnvioWhatsApp, crearCaptionDescarga, esErrorSinVideoInstagram, extraerUrlsImagenInstagram, descargaDirecta, createMediaSizeLimiter, MAX_MEDIA_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_VIDEO_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
 const { inspectWebpAnimation, parseMediaSizeBytes } = require('../stickerUtils');
 const { validateSessionSnapshot } = require('../sessionUtils');
 
@@ -63,6 +63,24 @@ test('no confunde URLs desnudas con comandos de plataforma', () => {
   assert.deepEqual(analizarSolicitudDescarga('Mira este video: https://cdn.example.org/video.mp4'), {
     tipo: 'url', plataforma: 'auto', enlace: 'https://cdn.example.org/video.mp4'
   });
+});
+
+test('extrae imágenes públicas de Instagram desde el JSON del post y Open Graph', () => {
+  const html = String.raw\`<html>
+    <meta property="og:image" content="https://scontent.cdninstagram.com/thumb.jpg?stp=abc&amp;token=xyz">
+    <script type="application/json">
+      {"display_url":"https:\\/\\/scontent.cdninstagram.com\\/v\\/real1.jpg?x=1\\u0026token=abc",
+       "image_versions2":{"candidates":[{"url":"https:\\/\\/scontent.cdninstagram.com\\/v\\/real2.jpg?x=2"}]},
+       "image_url":"https:\\/\\/evil.example\\/not-a-real-instagram-image.jpg"}
+    </script>
+  </html>\`;
+  const urls = extraerUrlsImagenInstagram(html);
+  assert.equal(urls.length, 3);
+  assert.match(urls[0], /real1\\.jpg/);
+  assert.match(urls[1], /real2\\.jpg/);
+  assert.match(urls[2], /thumb\\.jpg/);
+  assert.ok(urls.every(value => /(?:^|\\.)cdninstagram\\.com\\//.test(new URL(value).host + new URL(value).pathname)));
+  assert.ok(!urls.some(value => value.includes('evil.example')));
 });
 
 test('maneja publicaciones de Instagram sin video y genera captions sin referencia temporal inválida', () => {
