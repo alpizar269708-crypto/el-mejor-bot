@@ -76,6 +76,24 @@ async function procesarColaDescargas() {
   }
 }
 
+function liberarColaDescargas() {
+  const pendientes = colaDescargas.splice(0);
+  for (const job of pendientes) {
+    job.reject(new Error('Solicitud cancelada por liberarcache.'));
+  }
+  if (typeof global.gc === 'function') {
+    try { global.gc(); } catch {}
+  }
+  return {
+    pendientesCancelados: pendientes.length,
+    descargaActiva,
+    segundosActiva: trabajoActivoDesde
+      ? Math.floor((Date.now() - trabajoActivoDesde) / 1000)
+      : 0,
+    recoleccionForzadaDisponible: typeof global.gc === 'function'
+  };
+}
+
 function esIpPrivada(ip) {
   if (net.isIPv4(ip)) {
     const [a, b, c] = ip.split('.').map(Number);
@@ -149,6 +167,7 @@ function detectarPlataforma(urlInput) {
 }
 
 function extraerUrl(texto, plataforma = 'auto') {
+  if (/(?:^|\s)(?:ftp|file|data|javascript):\/\//i.test(String(texto || ''))) return null;
   const coincidencias = extraerCoincidencias(texto);
   for (const coincidencia of coincidencias) {
     const url = normalizarUrl(coincidencia);
