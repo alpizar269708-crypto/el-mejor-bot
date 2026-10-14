@@ -288,6 +288,26 @@ function mimetypeDesdeExtension(extension) {
   return map[ext] || 'application/octet-stream';
 }
 
+function createMediaSizeLimiter(maxBytes = MAX_MEDIA_BYTES) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new TypeError('El límite de descarga debe ser un entero positivo.');
+  }
+
+  const limitLabel = maxBytes === MAX_MEDIA_BYTES ? '100 MB' : maxBytes + ' bytes';
+  let receivedBytes = 0;
+
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      receivedBytes += chunk.length;
+      if (receivedBytes > maxBytes) {
+        callback(new Error('El archivo superó el límite de descarga de ' + limitLabel + '.'));
+        return;
+      }
+      callback(null, chunk);
+    }
+  });
+}
+
 async function descargaDirecta(urlInicial, tempDir, index = 1) {
   let url = normalizarUrl(urlInicial);
   if (!url) throw new Error('El enlace debe ser una URL HTTP/HTTPS pública válida.');
@@ -347,16 +367,8 @@ async function descargaDirecta(urlInicial, tempDir, index = 1) {
 
     destino = path.join(tempDir, String(index).padStart(3, '0') + '-direct' + extension);
     let receivedBytes = 0;
-    const sizeLimiter = new Transform({
-      transform(chunk, _encoding, callback) {
-        receivedBytes += chunk.length;
-        if (receivedBytes > MAX_MEDIA_BYTES) {
-          callback(new Error('El archivo superó el límite de descarga de 100 MB.'));
-          return;
-        }
-        callback(null, chunk);
-      }
-    });
+    const sizeLimiter = createMediaSizeLimiter(MAX_MEDIA_BYTES);
+    sizeLimiter.on('data', chunk => { receivedBytes += chunk.length; });
 
     await pipeline(
       Readable.fromWeb(response.body),
@@ -681,6 +693,7 @@ module.exports = {
   analizarSolicitudDescarga,
   tipoMimetype,
   descargaDirecta,
+  createMediaSizeLimiter,
   validarHostPublico,
   esIpPrivada,
   detectarPlataforma,
