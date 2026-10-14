@@ -32,11 +32,15 @@ ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN?.trim();
 const GITHUB_REPO = process.env.GITHUB_REPO || 'alpizar269708-crypto/el-mejor-bot';
 const SESSION_BRANCH = process.env.SESSION_BRANCH || 'session-data';
+// La sesión anterior se guardaba en main. Se conserva como fuente de recuperación
+// de solo lectura mientras session-data vuelve a tener un session.enc válido.
+const LEGACY_SESSION_BRANCH = process.env.LEGACY_SESSION_BRANCH || 'main';
 const SESSION_PASSWORD = process.env.SESSION_PASSWORD;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD?.trim() || SESSION_PASSWORD?.trim() || null;
 const ENCRYPTED_SESSION_FILE = 'session.enc';
 const LAST_GOOD_SESSION_FILE = 'session.last-good.enc';
 let restoredSessionSource = null;
+let restoredSessionBranch = null;
 
 // Memoria persistente del bot.
 // Se mantiene en RAM para máxima velocidad y se sincroniza en segundo plano
@@ -466,11 +470,18 @@ async function downloadEncryptedSession(options = {}) {
 
   const backupOnly = options.backupOnly === true;
   const primaryOnly = options.primaryOnly === true;
-  // Cada descarga restaura únicamente si la sesión no cambió durante el fetch.
+  const allowLegacyFallback =
+    options.allowLegacyFallback !== false &&
+    !backupOnly &&
+    !primaryOnly &&
+    LEGACY_SESSION_BRANCH !== SESSION_BRANCH;
   const expectedGeneration = options.expectedGeneration ?? socketGeneration;
+  const invalidSnapshots = [];
+  const restoreIssues = [];
 
-  async function tryRestore(filename, label) {
-    const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + filename + '?ref=' + encodeURIComponent(SESSION_BRANCH);
+  async function tryRestore(filename, label, branch = SESSION_BRANCH) {
+    const url = 'https://api.github.com/repos/' + GITHUB_REPO +
+      '/contents/' + filename + '?ref=' + encodeURIComponent(branch);
     const response = await githubRequest(url);
 
     if (response.status === 404) return false;
@@ -480,14 +491,14 @@ async function downloadEncryptedSession(options = {}) {
     }
 
     const file = await response.json();
-    const encrypted = Buffer.from(file.content.replace(/\\n/g, ''), 'base64').toString('utf8');
+    const encrypted = Buffer.from(String(file.content || '').replace(/\\n/g, ''), 'base64').toString('utf8');
     const decrypted = decryptSession(encrypted);
     const files = JSON.parse(decrypted);
 
     try {
       validateSessionSnapshot(files);
     } catch (error) {
-      console.warn('⚠️ Se ignora ' + filename + ': ' + error.message);
+      invalidSnapshots.push({ filename, branch, message: error.message });
       return false;
     }
 
@@ -498,43 +509,80 @@ async function downloadEncryptedSession(options = {}) {
 
     restoreSessionFiles(files, filename);
     restoredSessionSource = filename;
+    restoredSessionBranch = branch;
     console.log(label);
     return true;
   }
 
-  // Restaurar el archivo principal salvo que el código de WhatsApp ya haya
-  // confirmado que no es válido; en ese caso probamos únicamente el respaldo.
+  // Primero se intenta la rama de sesiones actual.
   if (!backupOnly) {
     try {
-      if (await tryRestore(ENCRYPTED_SESSION_FILE, 'Sesión cifrada restaurada desde GitHub.')) return true;
+      if (await tryRestore(ENCRYPTED_SESSION_FILE, 'Sesión cifrada restaurada desde GitHub.', SESSION_BRANCH)) return true;
     } catch (error) {
-      console.error('⚠️ No se pudo restaurar session.enc:', error.message);
+      restoreIssues.push({ filename: ENCRYPTED_SESSION_FILE, branch: SESSION_BRANCH, message: error.message });
     }
   }
 
   if (primaryOnly) {
-    console.warn('ℹ️ No se restauró session.enc; se evita utilizar un respaldo que WhatsApp ya rechazó.');
+    for (const issue of restoreIssues) {
+      console.warn('⚠️ No se pudo restaurar ' + issue.filename + ' desde ' + issue.branch + ': ' + issue.message);
+    }
+    for (const invalid of invalidSnapshots) {
+      console.warn('⚠️ Se ignora ' + invalid.filename + ' en ' + invalid.branch + ': ' + invalid.message);
+    }
+    console.warn('ℹ️ No se restauró session.enc; se evita reutilizar un respaldo que WhatsApp ya rechazó.');
     restoredSessionSource = null;
+    restoredSessionBranch = null;
     return false;
   }
 
+  // El respaldo solo se usa si la principal no sirve; los avisos se difieren
+  // hasta saber si otra copia válida puede recuperar la sesión.
   try {
-    if (await tryRestore(LAST_GOOD_SESSION_FILE, '🛡️ Sesión restaurada desde el respaldo de última sesión válida.')) return true;
+    if (await tryRestore(LAST_GOOD_SESSION_FILE, '🛡️ Sesión restaurada desde el respaldo de última sesión válida.', SESSION_BRANCH)) return true;
   } catch (error) {
-    console.error('❌ No se pudo restaurar session.last-good.enc:', error.message);
+    restoreIssues.push({ filename: LAST_GOOD_SESSION_FILE, branch: SESSION_BRANCH, message: error.message });
   }
 
-  if (backupOnly) console.warn('⚠️ No se pudo recuperar ninguna sesión válida desde el respaldo.');
-  else console.log('ℹ️ GitHub no tiene una sesión válida disponible para restaurar.');
+  // Históricamente el bot también guardó session.enc en main. Si la rama
+  // dedicada no tiene una sesión válida, probar esa copia cifrada antes de
+  // concluir que hace falta volver a vincular WhatsApp.
+  if (allowLegacyFallback) {
+    try {
+      if (await tryRestore(
+        ENCRYPTED_SESSION_FILE,
+        '🛡️ Sesión cifrada recuperada desde la rama heredada ' + LEGACY_SESSION_BRANCH + '.',
+        LEGACY_SESSION_BRANCH
+      )) return true;
+    } catch (error) {
+      restoreIssues.push({ filename: ENCRYPTED_SESSION_FILE, branch: LEGACY_SESSION_BRANCH, message: error.message });
+    }
+  }
+
+  // No llenar los logs en cada arranque si al final sí se recuperó una copia.
+  // Solo reportar las copias inválidas cuando ninguna fuente pudo restaurarse.
+  for (const invalid of invalidSnapshots) {
+    console.warn('⚠️ Se ignora ' + invalid.filename + ' en ' + invalid.branch + ': ' + invalid.message);
+  }
+  for (const issue of restoreIssues) {
+    console.warn('⚠️ No se pudo restaurar ' + issue.filename + ' desde ' + issue.branch + ': ' + issue.message);
+  }
+
+  if (backupOnly) {
+    console.warn('⚠️ No se pudo recuperar ninguna sesión válida desde el respaldo.');
+  } else {
+    console.log('ℹ️ Ninguna de las copias cifradas contiene una sesión válida para restaurar.');
+  }
   restoredSessionSource = null;
+  restoredSessionBranch = null;
   return false;
 }
 
-async function deleteEncryptedSessionFile(filename = ENCRYPTED_SESSION_FILE) {
+async function deleteEncryptedSessionFile(filename = ENCRYPTED_SESSION_FILE, branch = SESSION_BRANCH) {
   if (!sessionSecurityReady()) return false;
 
   try {
-    const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + filename + '?ref=' + encodeURIComponent(SESSION_BRANCH);
+    const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + filename + '?ref=' + encodeURIComponent(branch);
     const existing = await githubRequest(url);
 
     if (existing.status === 404) return true;
@@ -550,7 +598,7 @@ async function deleteEncryptedSessionFile(filename = ENCRYPTED_SESSION_FILE) {
       body: JSON.stringify({
         message: 'Eliminar archivo de sesión inválido: ' + filename,
         sha: file.sha,
-        branch: SESSION_BRANCH
+        branch
       })
     });
 
@@ -729,6 +777,8 @@ async function uploadEncryptedSession() {
       );
     }
 
+    restoredSessionSource = ENCRYPTED_SESSION_FILE;
+    restoredSessionBranch = SESSION_BRANCH;
     lastSessionUploadOk = true;
     lastSessionUploadError = null;
     sessionUploadFailures = 0;
@@ -1491,6 +1541,7 @@ async function restartForFreshLogin() {
     uploadAgain = false;
     await sessionIoTail.catch(() => {});
     restoredSessionSource = null;
+    restoredSessionBranch = null;
     pairingError = null;
     pairingCode = null;
     qrDataUrl = null;
@@ -1665,6 +1716,7 @@ async function startSocketInternal(restoreSession = true) {
       const statusCode = getDisconnectCode(lastDisconnect);
       const reason = getDisconnectReason(lastDisconnect);
       const rejectedSourceAtClose = restoredSessionSource;
+      const rejectedSourceBranchAtClose = restoredSessionBranch || SESSION_BRANCH;
       const registeredSessionAtClose = socketAuthState?.state?.creds?.registered === true;
       const pairingWasInProgress = Boolean(pairingNumber) || !registeredSessionAtClose;
 
@@ -1713,7 +1765,9 @@ async function startSocketInternal(restoreSession = true) {
         fs.mkdirSync(SESSION_DIR, { recursive: true });
 
         const rejectedSource = rejectedSourceAtClose;
+        const rejectedSourceBranch = rejectedSourceBranchAtClose;
         restoredSessionSource = null;
+        restoredSessionBranch = null;
 
         // Una vinculación manual incompleta nunca debe sustituirse por un vínculo viejo.
         if (pairingWasInProgress) {
@@ -1731,7 +1785,7 @@ async function startSocketInternal(restoreSession = true) {
         // Si WhatsApp rechazó el respaldo, retiramos únicamente esa copia e
         // intentamos la principal en modo aislado, sin volver al mismo respaldo.
         if (rejectedSource === LAST_GOOD_SESSION_FILE) {
-          await deleteEncryptedSessionFile(LAST_GOOD_SESSION_FILE);
+          await deleteEncryptedSessionFile(LAST_GOOD_SESSION_FILE, rejectedSourceBranch);
           if (recoveryGeneration !== socketGeneration) return;
 
           const primaryRestored = await downloadEncryptedSession({
@@ -1762,7 +1816,7 @@ async function startSocketInternal(restoreSession = true) {
 
         if (rejectedSource === ENCRYPTED_SESSION_FILE) {
           remotePrimarySessionRejected = true;
-          const primaryDeleted = await deleteEncryptedSession();
+          const primaryDeleted = await deleteEncryptedSessionFile(ENCRYPTED_SESSION_FILE, rejectedSourceBranch);
           if (recoveryGeneration !== socketGeneration) return;
           if (!primaryDeleted) {
             console.warn('⚠️ No se pudo retirar session.enc rechazada; se omitirá como respaldo hasta guardar una sesión nueva.');
@@ -2073,6 +2127,7 @@ async function logoutAndForgetSession() {
     sock = null;
     authState = null;
     restoredSessionSource = null;
+    restoredSessionBranch = null;
     qrDataUrl = null;
     pairingCode = null;
     pairingNumber = null;
