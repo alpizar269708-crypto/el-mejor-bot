@@ -863,6 +863,7 @@ let pairingRequested = false;
 let pairingError = null;
 let lastQrAt = 0;
 let loginRefreshPromise = null;
+let startSocketPromise = null;
 let connectionState = 'desconectado';
 let reconnectTimer = null;
 let reconnectAttempts = 0;
@@ -874,6 +875,7 @@ let lastDisconnectReason = null;
 let socketGeneration = 0;
 let shuttingDown = false;
 const processing = new Set();
+const processedMessageIds = new Set();
 let lastMessageReceivedAt = null;
 let lastMessageProcessedAt = null;
 
@@ -1194,6 +1196,15 @@ async function createSticker(message, sourceMessage, mediaType) {
 async function handleMessage(update) {
   const message = update?.messages?.[0];
   if (!message || message.key?.fromMe) return;
+  if (update?.type && update.type !== 'notify') return;
+  const messageId = message.key?.id;
+  if (messageId) {
+    if (processedMessageIds.has(messageId)) return;
+    processedMessageIds.add(messageId);
+    if (processedMessageIds.size > 2000) {
+      processedMessageIds.delete(processedMessageIds.values().next().value);
+    }
+  }
   lastMessageReceivedAt = new Date().toISOString();
 
   const text = getText(message);
@@ -1300,6 +1311,11 @@ async function restartForFreshLogin() {
   if (loginRefreshPromise) return loginRefreshPromise;
 
   loginRefreshPromise = (async () => {
+    // Esperar a que termine cualquier restauración/inicio en curso antes de
+    // cerrar el socket anterior y crear uno nuevo para la vinculación manual.
+    if (startSocketPromise) {
+      try { await startSocketPromise; } catch {}
+    }
     clearTimeout(reconnectTimer);
     socketGeneration += 1;
     restoredSessionSource = null;
@@ -1332,6 +1348,20 @@ async function restartForFreshLogin() {
 }
 
 async function startSocket(restoreSession = true) {
+  if (shuttingDown) return null;
+  if (sock && (connectionState === 'conectado' || connectionState === 'conectando')) return sock;
+  if (startSocketPromise) return startSocketPromise;
+
+  const started = startSocketInternal(restoreSession);
+  startSocketPromise = started;
+  try {
+    return await started;
+  } finally {
+    if (startSocketPromise === started) startSocketPromise = null;
+  }
+}
+
+async function startSocketInternal(restoreSession = true) {
   if (shuttingDown) return null;
   if (sock && (connectionState === 'conectado' || connectionState === 'conectando')) return sock;
 
@@ -1380,12 +1410,15 @@ async function startSocket(restoreSession = true) {
   });
 
   newSock.ev.on('messages.upsert', async update => {
+    // 'append' suele ser historial o mensajes añadidos posteriormente; procesar
+    // solo notificaciones nuevas evita ejecutar dos veces comandos/descargas.
+    if (update?.type && update.type !== 'notify') return;
     for (const message of update?.messages || []) {
       try {
         // No bloquear la recepción de mensajes mientras FFmpeg/Sticker Formatter
         // procesa un sticker. Así el bot puede seguir contestando y recibiendo
         // mensajes aunque un video tarde en convertirse.
-        handleMessage({ messages: [message] }).catch(error => {
+        handleMessage({ type: update?.type, messages: [message] }).catch(error => {
           console.error('Error procesando mensaje:', error);
         });
       } catch (error) {
