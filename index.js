@@ -1201,10 +1201,24 @@ function runStickerFfmpeg(command, output, label = 'FFmpeg') {
   });
 }
 
-async function createAnimatedWebpSticker(buffer, duration = 3, fps = 12, quality = 55) {
+async function createAnimatedWebpSticker(buffer, duration = 3, fps = 12, quality = 55, contentSize = 512) {
   const actualDuration = Math.min(Math.max(Number(duration) || 3, 0.1), 10);
   const actualFps = Math.min(Math.max(Number(fps) || 12, 1), 15);
-  const actualQuality = Math.min(Math.max(Number(quality) || 55, 20), 80);
+  const actualQuality = Math.min(Math.max(Number(quality) || 55, 10), 80);
+  const actualContentSize = Math.min(Math.max(Math.round((Number(contentSize) || 512) / 2) * 2, 320), 512);
+  const videoFilters = [
+    'fps=' + actualFps,
+    'scale=' + actualContentSize + ':' + actualContentSize + ':force_original_aspect_ratio=increase:flags=bicubic',
+    'crop=' + actualContentSize + ':' + actualContentSize + ':(iw-' + actualContentSize + ')/2:(ih-' + actualContentSize + ')/2'
+  ];
+  if (actualContentSize < 512) {
+    // Mantener lienzo 512x512 requerido por WhatsApp, reduciendo el área útil
+    // para ahorrar bytes sin bajar tanto los FPS. El borde añadido es transparente.
+    videoFilters.push('format=rgba');
+    videoFilters.push('pad=512:512:(ow-iw)/2:(oh-ih)/2:color=black@0');
+    videoFilters.push('format=yuva420p');
+  }
+  videoFilters.push('setsar=1');
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-sticker-'));
   const input = path.join(tempDir, 'input');
   const output = path.join(tempDir, 'sticker.webp');
@@ -1212,12 +1226,7 @@ async function createAnimatedWebpSticker(buffer, duration = 3, fps = 12, quality
   try {
     await fs.promises.writeFile(input, buffer);
     const command = ffmpeg(input)
-      .videoFilters([
-        'fps=' + actualFps,
-        'scale=512:512:force_original_aspect_ratio=increase:flags=bicubic',
-        'crop=512:512:(iw-512)/2:(ih-512)/2',
-        'setsar=1'
-      ])
+      .videoFilters(videoFilters)
       .outputOptions([
         '-t ' + actualDuration,
         '-an',
@@ -1332,7 +1341,8 @@ async function createFastVideoSticker(buffer, duration) {
         buffer,
         attempt.duration,
         attempt.fps,
-        attempt.quality
+        attempt.quality,
+        attempt.size
       );
 
       if (result.length <= MAX_ANIMATED_STICKER_BYTES) return result;
