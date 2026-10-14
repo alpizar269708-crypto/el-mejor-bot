@@ -886,8 +886,9 @@ async function descargarArchivos(url, plataforma = 'auto') {
 
       if (!archivos.length) {
         throw new Error(
-          'Instagram no entregó imágenes descargables para esta publicación. Comprueba que sea pública; ' +
-          'en carruseles, el acceso anónimo de Instagram puede ocultar las imágenes.'
+          'Instagram no permitió descargar imágenes de esta publicación. Comprueba que sea pública. ' +
+          'Si sigue fallando, configura INSTAGRAM_COOKIES_B64 en Render con el Base64 de un cookies.txt ' +
+          'exportado desde tu propia sesión de Instagram; no compartas esas cookies por chat.'
         );
       }
     }
