@@ -17,6 +17,7 @@ const {
 
 const { Sticker, StickerTypes } = require('wa-sticker-formatter');
 const { inspectWebpAnimation } = require('./stickerUtils');
+const { validateSessionSnapshot } = require('./sessionUtils');
 
 const crypto = require('crypto');
 const { execFile } = require('child_process');
@@ -479,16 +480,10 @@ async function downloadEncryptedSession(options = {}) {
     const decrypted = decryptSession(encrypted);
     const files = JSON.parse(decrypted);
 
-    let savedCreds;
     try {
-      if (!files['creds.json']) throw new Error('Falta creds.json');
-      savedCreds = JSON.parse(Buffer.from(files['creds.json'], 'base64').toString('utf8'));
-    } catch {
-      console.warn('⚠️ Se ignora ' + filename + ': credenciales ausentes o inválidas.');
-      return false;
-    }
-    if (savedCreds?.registered !== true) {
-      console.warn('⚠️ Se ignora ' + filename + ': la vinculación guardada está incompleta.');
+      validateSessionSnapshot(files);
+    } catch (error) {
+      console.warn('⚠️ Se ignora ' + filename + ': ' + error.message);
       return false;
     }
 
@@ -633,10 +628,7 @@ async function uploadEncryptedSession() {
     if (!files['creds.json']) {
       throw new Error('La sesión está vacía o creds.json no pudo leerse');
     }
-    const snapshotCreds = JSON.parse(Buffer.from(files['creds.json'], 'base64').toString('utf8'));
-    if (snapshotCreds?.registered !== true) {
-      throw new Error('El snapshot de sesión dejó de estar registrado; se cancela el guardado para proteger el respaldo.');
-    }
+    validateSessionSnapshot(files);
 
     const encrypted = encryptSession(JSON.stringify(files));
     const content = Buffer.from(encrypted, 'utf8').toString('base64');
