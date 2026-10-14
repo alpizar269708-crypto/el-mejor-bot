@@ -465,6 +465,7 @@ async function downloadEncryptedSession(options = {}) {
   }
 
   const backupOnly = options.backupOnly === true;
+  const primaryOnly = options.primaryOnly === true;
   // Cada descarga restaura únicamente si la sesión no cambió durante el fetch.
   const expectedGeneration = options.expectedGeneration ?? socketGeneration;
 
@@ -509,6 +510,12 @@ async function downloadEncryptedSession(options = {}) {
     } catch (error) {
       console.error('⚠️ No se pudo restaurar session.enc:', error.message);
     }
+  }
+
+  if (primaryOnly) {
+    console.warn('ℹ️ No se restauró session.enc; se evita utilizar un respaldo que WhatsApp ya rechazó.');
+    restoredSessionSource = null;
+    return false;
   }
 
   try {
@@ -642,7 +649,7 @@ async function uploadEncryptedSession() {
     // Antes de reemplazar la sesión actual, conservar la última sesión válida.
     // Si un deploy defectuoso genera credenciales registradas pero problemáticas,
     // esta copia permite recuperar la sesión anterior.
-    if (sha && existing.ok) {
+    if (sha && existing.ok && !remotePrimarySessionRejected) {
       const currentFileResponse = await githubRequest(url);
       const existingFile = currentFileResponse.ok
         ? await currentFileResponse.json().catch(() => null)
@@ -725,6 +732,7 @@ async function uploadEncryptedSession() {
     lastSessionUploadOk = true;
     lastSessionUploadError = null;
     sessionUploadFailures = 0;
+    remotePrimarySessionRejected = false;
     console.log('✅ Sesión cifrada guardada en GitHub.');
     return true;
   } catch (error) {
@@ -809,6 +817,60 @@ function scheduleReconnect(statusCode) {
   }, delay);
 }
 
+
+function scheduleSessionRestoreRetry(mode = 'backupOnly', attempt = 1) {
+  if (!sessionSecurityReady() || shuttingDown || sessionRestoreRetryTimer) return;
+
+  const delay = Math.min(15000 * Math.pow(2, Math.max(0, attempt - 1)), 120000);
+  const modeText = mode === 'primaryOnly' ? 'sesión principal' : 'respaldo';
+  pairingError = 'Recuperación automática de ' + modeText + ' en curso. La copia cifrada se conservará mientras se reintenta.';
+
+  sessionRestoreRetryTimer = setTimeout(async () => {
+    sessionRestoreRetryTimer = null;
+    if (
+      shuttingDown ||
+      loginRefreshPromise ||
+      connectionState === 'conectado' ||
+      connectionState === 'conectando'
+    ) return;
+
+    const generation = socketGeneration;
+    const options = { expectedGeneration: generation };
+    if (mode === 'backupOnly') options.backupOnly = true;
+    if (mode === 'primaryOnly') options.primaryOnly = true;
+
+    let restored = false;
+    try {
+      restored = await downloadEncryptedSession(options);
+    } catch (error) {
+      console.error('⚠️ Reintento de recuperación de sesión:', error.message);
+    }
+
+    if (shuttingDown || generation !== socketGeneration) return;
+
+    if (restored) {
+      sessionRecoveryFailures = 0;
+      pairingError = null;
+      console.log('🛡️ Sesión recuperada automáticamente en el intento ' + attempt + '.');
+      try {
+        await startSocket(false);
+      } catch (error) {
+        console.error('❌ No se pudo iniciar WhatsApp después de restaurar la sesión:', error.message);
+        scheduleReconnect(null);
+      }
+      return;
+    }
+
+    if (attempt < 5) {
+      scheduleSessionRestoreRetry(mode, attempt + 1);
+      return;
+    }
+
+    pairingError = 'No se pudo recuperar automáticamente la sesión tras varios intentos. Las copias cifradas se conservaron; puedes generar un nuevo código si necesitas vincular de nuevo.';
+    console.error('❌ Finalizaron los reintentos de recuperación; no se eliminaron los respaldos restantes.');
+  }, delay);
+}
+
 async function startSocketAfterWake() {
   if (shuttingDown) return;
 
@@ -873,8 +935,10 @@ let sessionUploadDone = null;
 const pendingCredentialWrites = new Set();
 let connectionState = 'desconectado';
 let reconnectTimer = null;
+let sessionRestoreRetryTimer = null;
 let reconnectAttempts = 0;
 let sessionRecoveryFailures = 0;
+let remotePrimarySessionRejected = false;
 let lastConnectedAt = null;
 let lastDisconnectAt = null;
 let lastDisconnectCode = null;
@@ -1613,11 +1677,13 @@ async function startSocketInternal(restoreSession = true) {
         statusCode === 401
       ) {
         sessionRecoveryFailures += 1;
-        console.error('🚪 WhatsApp rechazó la sesión (LOGGED OUT / BAD SESSION). Se comprobará el respaldo antes de pedir una nueva vinculación.');
+        console.error('🚪 WhatsApp rechazó la sesión (LOGGED OUT / BAD SESSION). Se comprobarán las copias cifradas.');
         qrDataUrl = null;
         pairingCode = null;
         pairingNumber = null;
         pairingRequested = false;
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
 
         try {
           fs.rmSync(SESSION_DIR, { recursive: true, force: true });
@@ -1627,37 +1693,70 @@ async function startSocketInternal(restoreSession = true) {
         const rejectedSource = rejectedSourceAtClose;
         restoredSessionSource = null;
 
-        // Una vinculación manual que todavía no terminó no debe sustituirse por
-        // el respaldo del vínculo anterior. Probar backup solo tras rechazar
-        // una sesión que realmente estaba registrada.
-        if (!pairingWasInProgress && rejectedSource !== LAST_GOOD_SESSION_FILE && sessionSecurityReady()) {
-          const backupRestored = await downloadEncryptedSession({ backupOnly: true, expectedGeneration: myGeneration });
+        // Una vinculación manual incompleta nunca debe sustituirse por un vínculo viejo.
+        if (pairingWasInProgress) {
+          pairingError = 'No se pudo completar la vinculación. Genera un nuevo código e inténtalo otra vez.';
+          connectionState = 'desconectado';
+          return;
+        }
+
+        if (!sessionSecurityReady()) {
+          pairingError = 'WhatsApp rechazó las credenciales y no hay respaldo cifrado configurado. Revisa GITHUB_TOKEN y SESSION_PASSWORD.';
+          connectionState = 'desconectado';
+          return;
+        }
+
+        // Si WhatsApp rechazó el respaldo, retiramos únicamente esa copia e
+        // intentamos la principal en modo aislado, sin volver al mismo respaldo.
+        if (rejectedSource === LAST_GOOD_SESSION_FILE) {
+          await deleteEncryptedSessionFile(LAST_GOOD_SESSION_FILE);
           if (myGeneration !== socketGeneration) return;
-          if (rejectedSource === ENCRYPTED_SESSION_FILE) {
-            await deleteEncryptedSession(); // La sesión principal fue la que WhatsApp rechazó.
-            if (myGeneration !== socketGeneration) return;
-          }
-          if (backupRestored) {
+
+          const primaryRestored = await downloadEncryptedSession({
+            primaryOnly: true,
+            expectedGeneration: myGeneration
+          });
+          if (myGeneration !== socketGeneration) return;
+
+          if (primaryRestored) {
             sessionRecoveryFailures = 0;
             pairingError = null;
-            console.warn('🛡️ Sesión principal rechazada; se intentará reconectar con session.last-good.enc.');
+            console.warn('🛡️ El respaldo fue rechazado; se conserva la sesión principal y se volverá a probar.');
             scheduleReconnect(statusCode);
             return;
           }
+
+          connectionState = 'desconectado';
+          scheduleSessionRestoreRetry('primaryOnly', 1);
+          return;
         }
 
-        if (!pairingWasInProgress && rejectedSource === LAST_GOOD_SESSION_FILE && sessionSecurityReady()) {
-          // WhatsApp confirmó que el respaldo también es inválido; borrar ambos
-          // archivos evita intentar restaurar lo mismo tras cada redeploy.
-          await deleteEncryptedSession();
-          await deleteEncryptedSessionFile(LAST_GOOD_SESSION_FILE);
+        // Si la principal fue rechazada, no se promueve a last-good.
+        const backupRestored = await downloadEncryptedSession({
+          backupOnly: true,
+          expectedGeneration: myGeneration
+        });
+        if (myGeneration !== socketGeneration) return;
+
+        if (rejectedSource === ENCRYPTED_SESSION_FILE) {
+          remotePrimarySessionRejected = true;
+          const primaryDeleted = await deleteEncryptedSession();
+          if (myGeneration !== socketGeneration) return;
+          if (!primaryDeleted) {
+            console.warn('⚠️ No se pudo retirar session.enc rechazada; se omitirá como respaldo hasta guardar una sesión nueva.');
+          }
         }
-        restoredSessionSource = null;
-        pairingError = pairingWasInProgress
-          ? 'No se pudo completar la vinculación. Genera un nuevo código e inténtalo otra vez.'
-          : 'WhatsApp rechazó las credenciales guardadas. Genera un nuevo código de vinculación.';
+
+        if (backupRestored) {
+          sessionRecoveryFailures = 0;
+          pairingError = null;
+          console.warn('🛡️ Sesión alternativa restaurada; se intentará reconectar.');
+          scheduleReconnect(statusCode);
+          return;
+        }
+
         connectionState = 'desconectado';
-        console.error('⚠️ No hay otro respaldo de sesión recuperable; se requiere una nueva vinculación.');
+        scheduleSessionRestoreRetry('backupOnly', 1);
         return;
       }
 
