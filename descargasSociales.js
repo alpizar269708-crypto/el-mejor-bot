@@ -188,12 +188,14 @@ function limpiarDirectorio(ruta) {
 
 function extensionDesdeContentDisposition(header) {
   const text = String(header || '');
-  const utf8Match = text.match(/filename\\*\\s*=\\s*UTF-8''([^;]+)/i);
-  const plainMatch = text.match(/filename\\s*=\\s*(?:\"([^\"]+)\"|([^;]+))/i);
+  const utf8Match = text.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  const plainMatch = text.match(/filename\s*=\s*(?:"([^"]+)"|([^;]+))/i);
   let filename = utf8Match?.[1] || plainMatch?.[1] || plainMatch?.[2] || '';
   filename = filename.trim();
   try { filename = decodeURIComponent(filename); } catch {}
-  const extension = path.extname(filename.replace(/^[\"']|[\"']$/g, '').split(/[\\\\/]/).pop() || '').toLowerCase();
+  const extension = path.extname(
+    filename.replace(/^["']|["']$/g, '').split(/[\\/]/).pop() || ''
+  ).toLowerCase();
   return DIRECT_MEDIA_EXTENSIONS.has(extension) ? extension : '';
 }
 
