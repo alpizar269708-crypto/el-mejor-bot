@@ -1173,9 +1173,9 @@ async function requestPairingCodeIfNeeded() {
 }
 
 const FFMPEG_STICKER_TIMEOUT_MS = 90000;
-const MAX_VIDEO_STICKER_QUEUE = 30;
-const videoQueue = [];
-let videoQueueRunning = false;
+const MAX_STICKER_QUEUE = 30;
+const stickerQueue = [];
+let stickerQueueRunning = false;
 
 function runStickerFfmpeg(command, output, label = 'FFmpeg') {
   return new Promise((resolve, reject) => {
@@ -1260,23 +1260,23 @@ async function createAnimatedWebpSticker(buffer, duration = 3, fps = 12, quality
   }
 }
 
-function enqueueVideoSticker(task) {
-  if (videoQueue.length >= MAX_VIDEO_STICKER_QUEUE) {
-    return Promise.reject(new Error('La cola de stickers de video está llena; vuelve a intentarlo en unos minutos.'));
+function enqueueSticker(task) {
+  if (stickerQueue.length >= MAX_STICKER_QUEUE) {
+    return Promise.reject(new Error('La cola de stickers está llena; vuelve a intentarlo en unos minutos.'));
   }
   return new Promise((resolve, reject) => {
-    videoQueue.push({ task, resolve, reject });
-    drainVideoQueue();
+    stickerQueue.push({ task, resolve, reject });
+    drainStickerQueue();
   });
 }
 
-async function drainVideoQueue() {
-  if (videoQueueRunning) return;
-  videoQueueRunning = true;
+async function drainStickerQueue() {
+  if (stickerQueueRunning) return;
+  stickerQueueRunning = true;
   try {
-    while (videoQueue.length) {
-      const job = videoQueue.shift();
-      console.log('🎬 Procesando video. Cola restante:', videoQueue.length);
+    while (stickerQueue.length) {
+      const job = stickerQueue.shift();
+      console.log('🧰 Procesando sticker. Cola restante:', stickerQueue.length);
       try {
         job.resolve(await job.task());
       } catch (error) {
@@ -1284,7 +1284,7 @@ async function drainVideoQueue() {
       }
     }
   } finally {
-    videoQueueRunning = false;
+    stickerQueueRunning = false;
   }
 }
 
@@ -1474,9 +1474,9 @@ async function createSticker(message, sourceMessage, mediaType) {
 
   try {
     if (mediaType === 'video') {
-      await enqueueVideoSticker(run);
+      await enqueueSticker(run);
     } else {
-      await run();
+      await enqueueSticker(run);
     }
   } catch (error) {
     console.error('Error creando sticker:', error);
@@ -1525,7 +1525,7 @@ async function handleMessage(update) {
 
   if (/^liberarcache$/i.test(text.trim())) {
     const descargas = liberarColaDescargas();
-    const stickersCancelados = videoQueue.splice(0);
+    const stickersCancelados = stickerQueue.splice(0);
     for (const job of stickersCancelados) {
       job.reject(new Error('Solicitud cancelada por liberarcache.'));
     }
@@ -2154,6 +2154,7 @@ app.get('/health', async (_req, res) => {
     ultimaConexion: lastConnectedAt,
     ultimaDesconexion: lastDisconnectAt,
     ultimoCodigoDesconexion: lastDisconnectCode,
+    ultimoMotivoDesconexion: lastDisconnectReason,
     intentosReconectar: reconnectAttempts,
     fallosSesionRestaurada: sessionRecoveryFailures
   });
