@@ -140,6 +140,21 @@ test('rechaza rutas de restauración que intentan salir de la carpeta de sesión
   assert.throws(() => validateSessionSnapshot(files), /ruta de archivo inválida/);
 });
 
+test('yt-dlp se instala y su binario puede ejecutarse', () => {
+  const fs = require('node:fs');
+  const { execFileSync } = require('node:child_process');
+  const youtubedl = require('youtube-dl-exec');
+  const binaryPath = youtubedl.constants?.YOUTUBE_DL_PATH;
+
+  assert.ok(binaryPath, 'youtube-dl-exec no expone la ruta del binario');
+  assert.ok(fs.existsSync(binaryPath), 'no se instaló yt-dlp en ' + binaryPath);
+  const version = execFileSync(binaryPath, ['--version'], {
+    encoding: 'utf8',
+    timeout: 15000,
+    stdio: ['ignore', 'pipe', 'pipe']
+  }).trim();
+  assert.ok(version.length > 0, 'yt-dlp no devolvió la versión instalada');
+});
 test('FFmpeg genera un WebP verdaderamente animado con el binario instalado', async t => {
   const fs = require('node:fs/promises');
   const os = require('node:os');
