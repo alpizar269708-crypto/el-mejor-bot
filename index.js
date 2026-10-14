@@ -33,6 +33,7 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN?.trim();
 const GITHUB_REPO = process.env.GITHUB_REPO || 'alpizar269708-crypto/el-mejor-bot';
 const SESSION_BRANCH = process.env.SESSION_BRANCH || 'session-data';
 const SESSION_PASSWORD = process.env.SESSION_PASSWORD;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD?.trim() || SESSION_PASSWORD?.trim() || null;
 const ENCRYPTED_SESSION_FILE = 'session.enc';
 const LAST_GOOD_SESSION_FILE = 'session.last-good.enc';
 let restoredSessionSource = null;
@@ -945,6 +946,41 @@ function normalizePhoneNumber(value) {
   return String(value || '').replace(/\D/g, '');
 }
 
+function requireAdminAuth(req, res, next) {
+  if (!ADMIN_PASSWORD) {
+    console.error('⚠️ Panel de administración bloqueado: configura ADMIN_PASSWORD en Render.');
+    return res.status(503).type('text/plain').send(
+      'Panel de vinculación desactivado. Configura ADMIN_PASSWORD en Render y vuelve a abrir esta página.'
+    );
+  }
+
+  const authorization = String(req.headers.authorization || '');
+  const match = authorization.match(/^Basic\s+(.+)$/i);
+  if (!match) {
+    res.set('WWW-Authenticate', 'Basic realm="el-mejor-bot", charset="UTF-8"');
+    return res.status(401).type('text/plain').send('Autenticación requerida para administrar WhatsApp.');
+  }
+
+  let decoded = '';
+  try {
+    decoded = Buffer.from(match[1], 'base64').toString('utf8');
+  } catch {}
+
+  const separator = decoded.indexOf(':');
+  const username = separator >= 0 ? decoded.slice(0, separator) : '';
+  const supplied = Buffer.from(separator >= 0 ? decoded.slice(separator + 1) : '');
+  const expected = Buffer.from(ADMIN_PASSWORD);
+  const passwordMatches = supplied.length === expected.length &&
+    crypto.timingSafeEqual(supplied, expected);
+
+  if (username !== 'admin' || !passwordMatches) {
+    res.set('WWW-Authenticate', 'Basic realm="el-mejor-bot", charset="UTF-8"');
+    return res.status(401).type('text/plain').send('Usuario o contraseña incorrectos.');
+  }
+
+  return next();
+}
+
 async function requestPairingCodeIfNeeded() {
   if (!sock || !pairingNumber || pairingRequested) return;
   if (authState?.state?.creds?.registered) return;
@@ -1640,7 +1676,7 @@ async function startSocketInternal(restoreSession = true) {
   return newSock;
 }
 
-app.get('/', async (_req, res) => {
+app.get('/', requireAdminAuth, async (_req, res) => {
   try {
     if (startupPromise && !startupReady) {
       try { await startupPromise; } catch {}
@@ -1788,7 +1824,7 @@ app.get('/health', async (_req, res) => {
   });
 });
 
-app.get('/estado-vinculacion', (_req, res) => {
+app.get('/estado-vinculacion', requireAdminAuth, (_req, res) => {
   res.json({
     conectado: connectionState === 'conectado',
     estado: connectionState,
@@ -1798,7 +1834,7 @@ app.get('/estado-vinculacion', (_req, res) => {
   });
 });
 
-app.post('/iniciar', async (req, res) => {
+app.post('/iniciar', requireAdminAuth, async (req, res) => {
   const numero = normalizePhoneNumber(req.body.numero);
 
   if (!numero) return res.status(400).send('Número inválido.');
@@ -1890,7 +1926,7 @@ async function logoutAndForgetSession() {
   return remoteSessionClean;
 }
 
-app.post('/cerrar-sesion', async (_req, res) => {
+app.post('/cerrar-sesion', requireAdminAuth, async (_req, res) => {
   try {
     await logoutAndForgetSession();
   } catch (error) {
@@ -1899,7 +1935,7 @@ app.post('/cerrar-sesion', async (_req, res) => {
   res.redirect('/');
 });
 
-app.get('/limpiar-whatsapp', async (_req, res) => {
+app.get('/limpiar-whatsapp', requireAdminAuth, async (_req, res) => {
   try {
     const remoteSessionClean = await logoutAndForgetSession();
     res.status(remoteSessionClean ? 200 : 503).json({
