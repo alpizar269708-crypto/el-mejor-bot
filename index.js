@@ -1609,8 +1609,13 @@ async function startSocketInternal(restoreSession = true) {
         authState = null;
       }
 
-      if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
-        console.error('🚪 WhatsApp rechazó la sesión (LOGGED OUT / 401). Se comprobará el respaldo antes de pedir una nueva vinculación.');
+      if (
+        statusCode === DisconnectReason.loggedOut ||
+        statusCode === DisconnectReason.badSession ||
+        statusCode === 401
+      ) {
+        sessionRecoveryFailures += 1;
+        console.error('🚪 WhatsApp rechazó la sesión (LOGGED OUT / BAD SESSION). Se comprobará el respaldo antes de pedir una nueva vinculación.');
         qrDataUrl = null;
         pairingCode = null;
         pairingNumber = null;
