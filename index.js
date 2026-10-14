@@ -1809,7 +1809,7 @@ async function startSocketInternal(restoreSession = true) {
   return newSock;
 }
 
-app.get('/', requireAdminAuth, async (_req, res) => {
+app.get('/', async (_req, res) => {
   try {
     if (startupPromise && !startupReady) {
       try { await startupPromise; } catch {}
@@ -1873,6 +1873,30 @@ async function actualizarEstado() {
     const data = await response.json();
 
     document.getElementById('connectionState').textContent = data.estado || 'desconectado';
+
+    const qrContainer = document.getElementById('qrContainer');
+
+    if (data.estado === 'conectado') {
+      qrContainer.innerHTML = '<p>WhatsApp ya está conectado.</p>';
+    } else if (data.qrDataUrl) {
+      let qrImage = qrContainer.querySelector('#qrImage');
+      if (!qrImage) {
+        qrContainer.innerHTML =
+          '<img id="qrImage" alt="QR para vincular WhatsApp" style="width:280px;height:280px">';
+        qrImage = qrContainer.querySelector('#qrImage');
+      }
+      if (qrImage.getAttribute('src') !== data.qrDataUrl) {
+        qrImage.setAttribute('src', data.qrDataUrl);
+      }
+    } else if (data.pairingCode) {
+      qrContainer.innerHTML = '<p>Usa el código de vinculación que aparece abajo.</p>';
+    } else if (data.pairingError) {
+      const qrError = document.createElement('p');
+      qrError.textContent = data.pairingError;
+      qrContainer.replaceChildren(qrError);
+    } else {
+      qrContainer.innerHTML = '<p id="qrEmpty">Esperando el QR de WhatsApp…</p>';
+    }
 
     const pairingContainer = document.getElementById('pairingContainer');
 
@@ -1957,7 +1981,8 @@ app.get('/health', async (_req, res) => {
   });
 });
 
-app.get('/estado-vinculacion', requireAdminAuth, (_req, res) => {
+app.get('/estado-vinculacion', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
   res.json({
     conectado: connectionState === 'conectado',
     estado: connectionState,
@@ -1967,7 +1992,7 @@ app.get('/estado-vinculacion', requireAdminAuth, (_req, res) => {
   });
 });
 
-app.post('/iniciar', requireAdminAuth, async (req, res) => {
+app.post('/iniciar', async (req, res) => {
   const numero = normalizePhoneNumber(req.body.numero);
 
   if (!numero) return res.status(400).send('Número inválido.');
@@ -2068,7 +2093,7 @@ async function logoutAndForgetSession() {
   return remoteSessionClean;
 }
 
-app.post('/cerrar-sesion', requireAdminAuth, async (_req, res) => {
+app.post('/cerrar-sesion', async (_req, res) => {
   try {
     await serializeAuthTransition(logoutAndForgetSession);
   } catch (error) {
