@@ -219,6 +219,13 @@ function analizarSolicitudDescarga(texto) {
     return { tipo: 'url', plataforma: 'auto', enlace: trimmed };
   }
 
+  // Si el usuario acompaña el enlace con texto, descargar el primer URL válido
+  // en vez de ignorar el mensaje completo.
+  const embeddedUrl = extraerUrl(trimmed, 'auto');
+  if (embeddedUrl) {
+    return { tipo: 'url', plataforma: 'auto', enlace: embeddedUrl };
+  }
+
   return null;
 }
 
@@ -560,6 +567,9 @@ function tipoEnvioWhatsApp(archivo) {
   const size = Number(archivo?.size || 0);
 
   if (archivo?.tipo === 'image') {
+    const extension = path.extname(String(archivo.nombre || archivo.path || '')).toLowerCase();
+    const inlineImageExtensions = new Set(['.jpg', '.jpeg', '.png', '.webp']);
+    if (extension && !inlineImageExtensions.has(extension)) return 'document';
     return size > MAX_INLINE_IMAGE_BYTES ? 'document' : 'image';
   }
   if (archivo?.tipo === 'video') {
