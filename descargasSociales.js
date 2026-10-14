@@ -570,7 +570,7 @@ async function descargarArchivos(url, plataforma = 'auto') {
       } catch (thumbnailError) {
         // Algunas versiones de yt-dlp devuelven error aun cuando escribieron miniaturas.
         const detail = String(thumbnailError?.stderr || thumbnailError?.message || thumbnailError || '')
-          .replace(/\\s+/g, ' ').trim().slice(0, 250);
+          .replace(/\s+/g, ' ').trim().slice(0, 250);
         console.warn('⚠️ Instagram sin video; resultado del intento de miniaturas:', detail);
       }
 
