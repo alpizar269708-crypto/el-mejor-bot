@@ -1,0 +1,22 @@
+services:
+  el-mejor-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: el-mejor-bot
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      GALLERY_DL_PATH: /opt/gallery-dl/bin/gallery-dl
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - whatsapp-session:/app/session
+    stop_grace_period: 30s
+
+volumes:
+  whatsapp-session:
