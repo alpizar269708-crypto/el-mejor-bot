@@ -1,0 +1,12 @@
+.git
+.github
+node_modules
+npm-debug.log*
+*.log
+.env
+.env.*
+!.env.example
+session/*
+!session/.gitkeep
+.venv-gallery-dl
+.session-quarantine-*
