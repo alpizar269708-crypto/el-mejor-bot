@@ -35,6 +35,16 @@ const SESSION_BRANCH = process.env.SESSION_BRANCH || 'session-data';
 // La sesión anterior se guardaba en main. Se conserva como fuente de recuperación
 // de solo lectura mientras session-data vuelve a tener un session.enc válido.
 const LEGACY_SESSION_BRANCH = process.env.LEGACY_SESSION_BRANCH || 'main';
+// Ramas históricas detectadas con copias de session.enc. Solo se consultan
+// después de la rama principal, el respaldo y la rama heredada; nunca se borran.
+const SESSION_FALLBACK_BRANCHES = (process.env.SESSION_FALLBACK_BRANCHES ||
+  'fix/descargas-hd,feature/tiktok-instagram-downloads,memory-data')
+  .split(',')
+  .map(branch => branch.trim())
+  .filter((branch, index, all) =>
+    branch && branch !== SESSION_BRANCH && branch !== LEGACY_SESSION_BRANCH &&
+    all.indexOf(branch) === index
+  );
 const SESSION_PASSWORD = process.env.SESSION_PASSWORD;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD?.trim() || SESSION_PASSWORD?.trim() || null;
 const ENCRYPTED_SESSION_FILE = 'session.enc';
@@ -589,6 +599,27 @@ async function downloadEncryptedSession(options = {}) {
       )) return true;
     } catch (error) {
       restoreIssues.push({ filename: ENCRYPTED_SESSION_FILE, branch: LEGACY_SESSION_BRANCH, message: error.message });
+    }
+  }
+
+  // Algunas versiones anteriores guardaron session.enc en ramas de trabajo.
+  // Probarlas como último recurso evita pedir una nueva vinculación si aún existe
+  // una sesión válida. Se conserva cada archivo remoto incluso si WhatsApp lo rechaza.
+  if (!backupOnly && !primaryOnly && !legacyOnly) {
+    for (const fallbackBranch of SESSION_FALLBACK_BRANCHES) {
+      try {
+        if (await tryRestore(
+          ENCRYPTED_SESSION_FILE,
+          '🛡️ Sesión cifrada recuperada desde rama alternativa ' + fallbackBranch + '.',
+          fallbackBranch
+        )) return true;
+      } catch (error) {
+        restoreIssues.push({
+          filename: ENCRYPTED_SESSION_FILE,
+          branch: fallbackBranch,
+          message: error.message
+        });
+      }
     }
   }
 
