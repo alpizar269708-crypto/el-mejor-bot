@@ -7,10 +7,15 @@ const net = require('node:net');
 const dns = require('node:dns/promises');
 const { Readable, Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const execFileAsync = promisify(execFile);
 const youtubeDlExec = require('youtube-dl-exec');
 const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
 
 const youtubedl = youtubeDlExec;
+const GALLERY_DL_PATH = process.env.GALLERY_DL_PATH?.trim() || path.join(__dirname, '.venv-gallery-dl', 'bin', 'gallery-dl');
+const GALLERY_DL_TIMEOUT_MS = 120000;
 // WhatsApp documenta un límite de vídeo de 100 MB; usar MB decimales evita
 // que un archivo de 100 MiB rebase el límite real del cliente.
 const MAX_MEDIA_BYTES = 100_000_000;
@@ -534,11 +539,80 @@ function extraerUrlsImagenInstagram(html) {
   return candidates.slice(0, MAX_MEDIA_FILES);
 }
 
+async function descargarImagenesInstagramConGalleryDl(urlInicial, tempDir) {
+  if (!fs.existsSync(GALLERY_DL_PATH)) return [];
+
+  let cookiesPath = null;
+  const encodedCookies = process.env.INSTAGRAM_COOKIES_B64?.trim();
+  if (encodedCookies) {
+    const cookies = Buffer.from(encodedCookies, 'base64');
+    const normalized = encodedCookies.replace(/=+$/, '');
+    if (
+      !cookies.length ||
+      cookies.toString('base64').replace(/=+$/, '') !== normalized ||
+      !cookies.toString('utf8').includes('\t')
+    ) {
+      throw new Error('INSTAGRAM_COOKIES_B64 no parece ser un archivo cookies.txt válido en Base64.');
+    }
+    cookiesPath = path.join(tempDir, '.instagram-cookies.txt');
+    await fs.promises.writeFile(cookiesPath, cookies, { mode: 0o600, flag: 'wx' });
+  }
+
+  const args = [
+    '--no-input',
+    '--range', '1-' + MAX_MEDIA_FILES,
+    '--directory', tempDir,
+    '--filesize-max', '100M',
+    '--http-timeout', '25',
+    '--retries', '2'
+  ];
+  if (cookiesPath) args.push('--cookies', cookiesPath);
+  args.push(urlInicial);
+
+  try {
+    await execFileAsync(GALLERY_DL_PATH, args, {
+      timeout: GALLERY_DL_TIMEOUT_MS,
+      maxBuffer: 2 * 1024 * 1024,
+      windowsHide: true
+    });
+  } catch (error) {
+    // gallery-dl puede devolver código distinto de cero si Instagram bloquea
+    // el acceso anónimo aunque haya descargado algún archivo. Se inspeccionan
+    // los resultados antes de decidir si usar otro fallback.
+    const detail = String(error?.stderr || error?.message || error || '')
+      .replace(/\s+/g, ' ').trim().slice(0, 300);
+    console.warn('⚠️ gallery-dl no pudo completar la galería de Instagram:', detail);
+  } finally {
+    if (cookiesPath) await fs.promises.rm(cookiesPath, { force: true }).catch(() => {});
+  }
+
+  const downloaded = await listarArchivosMedia(tempDir);
+  const images = downloaded.filter(file => file.tipo === 'image').slice(0, MAX_MEDIA_FILES);
+  const nonImages = downloaded.filter(file => file.tipo !== 'image');
+  for (const file of nonImages) {
+    await fs.promises.rm(file.path, { force: true }).catch(() => {});
+  }
+  return images;
+}
+
 async function descargarImagenesInstagram(urlInicial, tempDir) {
   let pageUrl = normalizarUrl(urlInicial);
   if (!pageUrl || detectarPlataforma(pageUrl) !== 'instagram') {
     throw new Error('El fallback de imágenes solo acepta enlaces de Instagram.');
   }
+
+  // gallery-dl está orientado a galerías e imágenes (incluidos carruseles).
+  // Probarlo primero evita depender del HTML anónimo, que Instagram cambia o bloquea.
+  try {
+    const galleryFiles = await descargarImagenesInstagramConGalleryDl(pageUrl.toString(), tempDir);
+    if (galleryFiles.length) return galleryFiles;
+  } catch (error) {
+    console.warn('⚠️ No se pudo usar gallery-dl para Instagram:', String(error?.message || error).slice(0, 250));
+  }
+
+  // Limpiar cualquier descarga parcial del extractor antes del fallback HTTP.
+  await limpiarDirectorio(tempDir);
+  await fs.promises.mkdir(tempDir, { recursive: true });
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 25000);
@@ -899,6 +973,7 @@ module.exports = {
   esErrorSinVideoInstagram,
   extraerUrlsImagenInstagram,
   descargarImagenesInstagram,
+  descargarImagenesInstagramConGalleryDl,
   comandoDescargaSocial,
   descargarArchivos,
   extraerUrl,
