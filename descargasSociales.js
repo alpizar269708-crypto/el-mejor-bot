@@ -308,7 +308,7 @@ function createMediaSizeLimiter(maxBytes = MAX_MEDIA_BYTES) {
   });
 }
 
-async function descargaDirecta(urlInicial, tempDir, index = 1) {
+async function descargaDirecta(urlInicial, tempDir, index = 1, extraHeaders = {}) {
   let url = normalizarUrl(urlInicial);
   if (!url) throw new Error('El enlace debe ser una URL HTTP/HTTPS pública válida.');
 
@@ -328,7 +328,8 @@ async function descargaDirecta(urlInicial, tempDir, index = 1) {
         signal: controller.signal,
         headers: {
           'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
-          Accept: 'video/*,image/*,application/octet-stream;q=0.9,*/*;q=0.5'
+          Accept: 'video/*,image/*,application/octet-stream;q=0.9,*/*;q=0.5',
+          ...extraHeaders
         }
       });
 
@@ -468,6 +469,161 @@ function crearCaptionDescarga(archivo, mediaKey, indice, total) {
   return '✅ Archivo descargado.';
 }
 
+const INSTAGRAM_IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif', '.bmp']);
+
+function decodificarValorJsonHtml(value) {
+  let result = String(value || '');
+  try {
+    result = JSON.parse('"' + result.replace(/"/g, '\\"') + '"');
+  } catch {
+    result = result.replace(/\\\//g, '/').replace(/\\u0026/gi, '&').replace(/\\u003d/gi, '=');
+  }
+  return result
+    .replace(/&amp;/gi, '&')
+    .replace(/&#x26;/gi, '&')
+    .replace(/&#38;/g, '&')
+    .trim();
+}
+
+function extraerUrlsImagenInstagram(html) {
+  const source = String(html || '');
+  const candidates = [];
+  const seen = new Set();
+
+  function add(rawValue) {
+    const decoded = decodificarValorJsonHtml(rawValue);
+    const url = normalizarUrl(decoded);
+    if (!url) return;
+
+    const host = url.hostname.toLowerCase().replace(/^www\./, '');
+    const trustedImageHost =
+      host === 'instagram.com' || host.endsWith('.instagram.com') ||
+      host === 'cdninstagram.com' || host.endsWith('.cdninstagram.com') ||
+      host === 'fbcdn.net' || host.endsWith('.fbcdn.net');
+    if (!trustedImageHost) return;
+
+    const extension = path.extname(url.pathname).toLowerCase();
+    if (!INSTAGRAM_IMAGE_EXTENSIONS.has(extension)) return;
+
+    const normalized = url.toString();
+    if (seen.has(normalized)) return;
+    seen.add(normalized);
+    candidates.push(normalized);
+  }
+
+  // Priorizar las URLs de imagen completas presentes en el JSON del post,
+  // incluidas las entradas individuales de un carrusel.
+  const imageValuePattern = /"(?:display_url|display_src|thumbnail_src|image_url|imageUrl)"\s*:\s*"((?:\\.|[^"\\])*)"/gi;
+  for (const match of source.matchAll(imageValuePattern)) add(match[1]);
+
+  // Las imágenes de Instagram también aparecen como image_versions2.candidates[].url.
+  // Se limita la búsqueda a dominios oficiales y extensiones de imagen antes de aceptar.
+  const candidateUrlPattern = /"url"\s*:\s*"((?:\\.|[^"\\])*)"/gi;
+  for (const match of source.matchAll(candidateUrlPattern)) add(match[1]);
+
+  // Como último recurso, utilizar las imágenes Open Graph de publicaciones públicas.
+  for (const match of source.matchAll(/<meta\b[^>]*>/gi)) {
+    const tag = match[0];
+    const property = tag.match(/\b(?:property|name)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+    const name = String(property?.[1] || property?.[2] || property?.[3] || '').toLowerCase();
+    if (name !== 'og:image' && name !== 'twitter:image') continue;
+    const content = tag.match(/\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+    add(content?.[1] || content?.[2] || content?.[3] || '');
+  }
+
+  return candidates.slice(0, MAX_MEDIA_FILES);
+}
+
+async function descargarImagenesInstagram(urlInicial, tempDir) {
+  let pageUrl = normalizarUrl(urlInicial);
+  if (!pageUrl || detectarPlataforma(pageUrl) !== 'instagram') {
+    throw new Error('El fallback de imágenes solo acepta enlaces de Instagram.');
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25000);
+  let response = null;
+
+  try {
+    for (let redirects = 0; redirects <= 5; redirects++) {
+      const current = normalizarUrl(pageUrl.toString());
+      if (!current) throw new Error('Instagram redirigió a una URL no permitida.');
+      await validarHostPublico(current);
+
+      response = await fetch(current, {
+        redirect: 'manual',
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml'
+        }
+      });
+
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get('location');
+        if (!location || redirects === 5) throw new Error('Instagram redirigió demasiadas veces.');
+        pageUrl = new URL(location, current);
+        try { await response.body?.cancel(); } catch {}
+        response = null;
+        continue;
+      }
+      break;
+    }
+
+    if (!response?.ok) {
+      throw new Error('Instagram respondió HTTP ' + (response?.status ?? 'sin respuesta') + ' al consultar la publicación.');
+    }
+
+    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+    if (contentType && !contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) {
+      throw new Error('Instagram no devolvió la página pública de la publicación.');
+    }
+
+    const html = (await response.text()).slice(0, 8_000_000);
+    const candidates = extraerUrlsImagenInstagram(html);
+    if (!candidates.length) {
+      throw new Error('Instagram no expuso URLs públicas de imágenes en la página de la publicación.');
+    }
+
+    const files = [];
+    const errors = [];
+    for (const candidate of candidates) {
+      try {
+        const file = await descargaDirecta(
+          candidate,
+          tempDir,
+          files.length + 1,
+          { Referer: 'https://www.instagram.com/' }
+        );
+        if (file.tipo !== 'image') {
+          await fs.promises.rm(file.path, { force: true }).catch(() => {});
+          continue;
+        }
+        files.push(file);
+        if (files.length >= MAX_MEDIA_FILES) break;
+      } catch (error) {
+        errors.push(error?.message || String(error));
+      }
+    }
+
+    if (!files.length) {
+      throw new Error(
+        'Instagram mostró enlaces de imagen, pero no fue posible descargarlos' +
+        (errors.length ? ': ' + errors[0].slice(0, 180) : '.')
+      );
+    }
+    return files;
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('La consulta de imágenes de Instagram superó los 25 segundos.');
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    try {
+      if (response?.body && !response.bodyUsed) await response.body.cancel();
+    } catch {}
+  }
+}
+
 async function descargarArchivos(url, plataforma = 'auto') {
   const plataformaEfectiva = plataforma === 'auto' ? (detectarPlataforma(url) || 'auto') : plataforma;
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'social-download-'));
@@ -550,9 +706,8 @@ async function descargarArchivos(url, plataforma = 'auto') {
       archivos = await listarArchivosMedia(tempDir);
     }
 
-    // Las publicaciones de Instagram que solo contienen fotos no tienen formatos
-    // de video. En ese caso yt-dlp puede escribir sus miniaturas si se ignora
-    // específicamente el error de formatos ausentes; se aprovechan como imágenes.
+    // yt-dlp prioriza video/audio; para posts solo de fotos extraer URLs de
+    // imágenes de la página pública de Instagram antes de probar miniaturas.
     if (
       !archivos.length &&
       plataformaEfectiva === 'instagram' &&
@@ -561,24 +716,35 @@ async function descargarArchivos(url, plataforma = 'auto') {
       await limpiarDirectorio(tempDir);
       await fs.promises.mkdir(tempDir, { recursive: true });
       try {
-        await youtubedl(parsed.toString(), {
-          ...opcionesBase,
-          writeThumbnail: true,
-          ignoreNoFormatsError: true,
-          skipDownload: true
-        }, { timeout: TIMEOUT_MS });
-      } catch (thumbnailError) {
-        // Algunas versiones de yt-dlp devuelven error aun cuando escribieron miniaturas.
-        const detail = String(thumbnailError?.stderr || thumbnailError?.message || thumbnailError || '')
-          .replace(/\s+/g, ' ').trim().slice(0, 250);
-        console.warn('⚠️ Instagram sin video; resultado del intento de miniaturas:', detail);
+        archivos = await descargarImagenesInstagram(parsed.toString(), tempDir);
+      } catch (imageError) {
+        console.warn('⚠️ Fallback de imágenes de Instagram:', String(imageError?.message || imageError).slice(0, 350));
       }
 
-      archivos = await listarArchivosMedia(tempDir);
+      // Conserva el fallback de miniatura como segunda alternativa para URLs
+      // públicas cuyo HTML no expone las imágenes originales.
+      if (!archivos.length) {
+        await limpiarDirectorio(tempDir);
+        await fs.promises.mkdir(tempDir, { recursive: true });
+        try {
+          await youtubedl(parsed.toString(), {
+            ...opcionesBase,
+            writeThumbnail: true,
+            ignoreNoFormatsError: true,
+            skipDownload: true
+          }, { timeout: TIMEOUT_MS });
+        } catch (thumbnailError) {
+          const detail = String(thumbnailError?.stderr || thumbnailError?.message || thumbnailError || '')
+            .replace(/\s+/g, ' ').trim().slice(0, 250);
+          console.warn('⚠️ Instagram sin video; resultado del intento de miniaturas:', detail);
+        }
+        archivos = await listarArchivosMedia(tempDir);
+      }
+
       if (!archivos.length) {
         throw new Error(
-          'Instagram indica que esta publicación no contiene video y no se pudo recuperar una imagen. ' +
-          'Puede ser una publicación privada, eliminada o un carrusel que Instagram no está entregando al extractor.'
+          'Instagram no entregó imágenes descargables para esta publicación. Comprueba que sea pública; ' +
+          'en carruseles, el acceso anónimo de Instagram puede ocultar las imágenes.'
         );
       }
     }
@@ -731,6 +897,8 @@ module.exports = {
   tipoEnvioWhatsApp,
   crearCaptionDescarga,
   esErrorSinVideoInstagram,
+  extraerUrlsImagenInstagram,
+  descargarImagenesInstagram,
   comandoDescargaSocial,
   descargarArchivos,
   extraerUrl,
