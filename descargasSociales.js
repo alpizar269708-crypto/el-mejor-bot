@@ -97,11 +97,14 @@ async function descargarArchivos(url, plataforma) {
     restrictFilenames: true,
     maxFilesize: '64M',
     userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    referer: plataforma === 'instagram'
-      ? 'https://www.instagram.com/'
-      : plataforma === 'x'
-        ? 'https://x.com/'
-        : 'https://www.tiktok.com/'
+    referer: ({
+      instagram: 'https://www.instagram.com/',
+      x: 'https://x.com/',
+      pinterest: 'https://www.pinterest.com/',
+      facebook: 'https://www.facebook.com/',
+      reddit: 'https://www.reddit.com/',
+      threads: 'https://www.threads.net/'
+    })[plataforma] || 'https://www.tiktok.com/'
   };
   const opcionesVideo = {
     ...opcionesBase,
@@ -134,7 +137,7 @@ async function descargarArchivos(url, plataforma) {
         .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     }
 
-    if (!nombres.length) throw new Error('Instagram no produjo archivos de imagen o video compatibles.');
+    if (!nombres.length) throw new Error(nombrePlataforma(plataforma) + ' no produjo archivos de imagen o video compatibles.');
     const archivos = [];
     for (const nombre of nombres.slice(0, 10)) {
       const ruta = path.join(tempDir, nombre);
@@ -162,9 +165,13 @@ async function descargarArchivos(url, plataforma) {
   }
 }
 
+function nombrePlataforma(plataforma) {
+  return { tiktok: 'TikTok', instagram: 'Instagram', x: 'X', pinterest: 'Pinterest', facebook: 'Facebook', reddit: 'Reddit', threads: 'Threads' }[plataforma] || plataforma;
+}
+
 async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma) {
   const url = extraerUrl(texto, plataforma);
-  const nombre = { tiktok: 'TikTok', instagram: 'Instagram', x: 'X', pinterest: 'Pinterest', facebook: 'Facebook', reddit: 'Reddit', threads: 'Threads' }[plataforma] || plataforma;
+  const nombre = nombrePlataforma(plataforma);
   if (!url) {
     await sock.sendMessage(chatId, {
       text: '⚠️ Envíame un enlace público válido de ' + nombre + '. Ejemplo: ' + plataforma + ' https://...'
@@ -185,7 +192,7 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma) {
         const caption = archivos.length > 1
           ? '✅ Archivo ' + (i + 1) + ' de ' + archivos.length + ' descargado.'
           : (archivo.tipo === 'image'
-            ? '✅ Foto de Instagram descargada.'
+            ? '✅ Foto descargada de ' + nombre + '.'
             : '✅ Video listo en la mejor calidad disponible.');
         await sock.sendMessage(chatId, {
           [archivo.tipo]: archivo.buffer,
