@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extraerUrl, analizarSolicitudDescarga, detectarPlataforma, tipoMimetype, tipoEnvioWhatsApp, crearCaptionDescarga, esErrorSinVideoInstagram, extraerUrlsImagenInstagram, extraerUrlsImagenGalleryDl, descargaDirecta, createMediaSizeLimiter, MAX_MEDIA_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_VIDEO_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
+const { extraerUrl, analizarSolicitudDescarga, detectarPlataforma, tipoMimetype, tipoEnvioWhatsApp, crearCaptionDescarga, esErrorSinVideoInstagram, extraerUrlsImagenInstagram, extraerUrlsImagenGalleryDl, extraerShortcodeInstagram, extraerUrlsImagenInstagramDesdeJson, descargaDirecta, createMediaSizeLimiter, MAX_MEDIA_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_VIDEO_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
 const { inspectWebpAnimation, parseMediaSizeBytes } = require('../stickerUtils');
 const { validateSessionSnapshot } = require('../sessionUtils');
 
@@ -93,6 +93,52 @@ test('extrae imágenes públicas de Instagram desde el JSON del post y Open Grap
   assert.match(urls[2], /thumb[.]jpg/);
   assert.ok(urls.every(value => new URL(value).hostname.endsWith('cdninstagram.com')));
   assert.ok(!urls.some(value => value.includes('evil.example')));
+});
+
+test('extrae el shortcode de publicaciones, reels y videos de Instagram', () => {
+  assert.equal(extraerShortcodeInstagram('https://www.instagram.com/p/AbC_123/'), 'AbC_123');
+  assert.equal(extraerShortcodeInstagram('https://instagram.com/reel/DeF456/?igsh=abc'), 'DeF456');
+  assert.equal(extraerShortcodeInstagram('https://www.instagram.com/tv/GhI789/'), 'GhI789');
+  assert.equal(extraerShortcodeInstagram('https://example.com/p/AbC_123/'), null);
+  assert.equal(extraerShortcodeInstagram('https://www.instagram.com/username/'), null);
+});
+
+test('extrae solo fotos originales del JSON GraphQL público y omite miniaturas de video', () => {
+  const payload = {
+    data: {
+      xdt_api__v1__media__shortcode__web_info: {
+        items: [{
+          media_type: 8,
+          carousel_media: [
+            {
+              media_type: 1,
+              image_versions2: { candidates: [
+                { url: 'https://scontent.cdninstagram.com/v/photo-small.jpg?token=a', width: 300, height: 300 },
+                { url: 'https://scontent.cdninstagram.com/v/photo-large.jpg?token=b', width: 1080, height: 1350 }
+              ]}
+            },
+            {
+              media_type: 2,
+              image_versions2: { candidates: [
+                { url: 'https://scontent.cdninstagram.com/v/video-thumbnail.jpg?token=c', width: 1080, height: 1920 }
+              ]}
+            },
+            {
+              media_type: 1,
+              image_versions2: { candidates: [
+                { url: 'https://scontent-lax3-2.xx.fbcdn.net/v/photo2.webp?token=d', width: 1080, height: 1080 }
+              ]}
+            }
+          ]
+        }]
+      }
+    }
+  };
+  const urls = extraerUrlsImagenInstagramDesdeJson(payload);
+  assert.equal(urls.length, 2);
+  assert.match(urls[0], /photo-large[.]jpg/);
+  assert.match(urls[1], /photo2[.]webp/);
+  assert.ok(!urls.some(url => /video-thumbnail/.test(url)));
 });
 
 test('filtra URLs de imágenes desde la salida de gallery-dl', () => {
