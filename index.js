@@ -1141,9 +1141,9 @@ function serializeAuthTransition(action) {
 
 function requireAdminAuth(req, res, next) {
   if (!ADMIN_PASSWORD) {
-    console.error('⚠️ Panel de administración bloqueado: configura ADMIN_PASSWORD en Render.');
+    console.error('⚠️ Panel de administración bloqueado: configura ADMIN_PASSWORD en el entorno de ejecución.');
     return res.status(503).type('text/plain').send(
-      'Panel de vinculación desactivado. Configura ADMIN_PASSWORD en Render y vuelve a abrir esta página.'
+      'Panel de vinculación desactivado. Configura ADMIN_PASSWORD en el entorno de ejecución y vuelve a abrir esta página.'
     );
   }
 
