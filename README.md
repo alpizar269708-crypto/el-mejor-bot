@@ -17,10 +17,10 @@ Incluye QR y código de vinculación de 8 dígitos, con reconexión automática.
 
 El panel de vinculación y las acciones que pueden cerrar o reemplazar la sesión requieren autenticación HTTP Basic:
 - Usuario: `admin`
-- Contraseña: `ADMIN_PASSWORD` en Render.
+- Contraseña: `ADMIN_PASSWORD` en el entorno de ejecución.
 - Si `ADMIN_PASSWORD` no existe, el panel usa `SESSION_PASSWORD` como alternativa.
 
-Configura `ADMIN_PASSWORD` en Render para que la contraseña del panel sea independiente de la usada para cifrar la sesión. No compartas esa contraseña: el panel muestra el QR/código con el que se puede vincular un dispositivo a tu WhatsApp.
+Configura `ADMIN_PASSWORD` en el entorno de ejecución para que la contraseña del panel sea independiente de la usada para cifrar la sesión. No compartas esa contraseña: el panel muestra el QR/código con el que se puede vincular un dispositivo a tu WhatsApp.
 
 La sesión se guarda en `./session`. En Render Free el almacenamiento puede ser efímero al recrear la instancia.
 
