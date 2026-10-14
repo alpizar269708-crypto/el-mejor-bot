@@ -38,6 +38,28 @@ test('reconoce enlaces de las plataformas admitidas', () => {
   }
 });
 
+test('acepta enlaces públicos genéricos y dominios sin protocolo', () => {
+  assert.equal(
+    extraerUrl('https://cdn.example.org/files/video.mov?token=abc', 'auto'),
+    'https://cdn.example.org/files/video.mov?token=abc'
+  );
+  assert.equal(
+    extraerUrl('images.example.org/picture.webp', 'auto'),
+    'https://images.example.org/picture.webp'
+  );
+  assert.equal(
+    extraerUrl('https://youtu.be/abc123', 'youtube'),
+    'https://youtu.be/abc123'
+  );
+});
+
+test('rechaza esquemas y hosts locales no admitidos', () => {
+  assert.equal(extraerUrl('ftp://cdn.example.org/video.mp4', 'auto'), null);
+  assert.equal(extraerUrl('http://localhost/secret.mp4', 'auto'), null);
+  assert.equal(extraerUrl('http://127.0.0.1/private.mp4', 'auto'), null);
+  assert.equal(extraerUrl('http://[::1]/private.mp4', 'auto'), null);
+});
+
 test('rechaza dominios parecidos pero no auténticos', () => {
   assert.equal(extraerUrl('https://instagram.com.evil.example/p/abc', 'instagram'), null);
   assert.equal(extraerUrl('https://not-tiktok.com/@demo/video/1', 'tiktok'), null);
