@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extraerUrl, analizarSolicitudDescarga, detectarPlataforma, tipoMimetype, tipoEnvioWhatsApp, crearCaptionDescarga, esErrorSinVideoInstagram, extraerUrlsImagenInstagram, extraerUrlsImagenGalleryDl, extraerShortcodeInstagram, crearUrlsEmbedInstagram, extraerUrlsImagenInstagramDesdeJson, descargaDirecta, createMediaSizeLimiter, MAX_MEDIA_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_VIDEO_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
+const { extraerUrl, analizarSolicitudDescarga, detectarPlataforma, tipoMimetype, tipoEnvioWhatsApp, crearCaptionDescarga, esErrorSinVideoInstagram, extraerUrlsImagenInstagram, extraerUrlsImagenGalleryDl, extraerUrlsImagenApiInstagramPublica, extraerShortcodeInstagram, crearUrlsEmbedInstagram, extraerUrlsImagenInstagramDesdeJson, descargaDirecta, createMediaSizeLimiter, MAX_MEDIA_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_VIDEO_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
 const { inspectWebpAnimation, parseMediaSizeBytes, parseFfmpegDurationSeconds, resolveStickerDurationSeconds, buildVideoStickerAttempts, MAX_ANIMATED_STICKER_BYTES } = require('../stickerUtils');
 const { validateSessionSnapshot } = require('../sessionUtils');
 
@@ -158,6 +158,33 @@ test('extrae solo fotos originales del JSON GraphQL público y omite miniaturas 
   assert.match(urls[0], /photo-large[.]jpg/);
   assert.match(urls[1], /photo2[.]webp/);
   assert.ok(!urls.some(url => /video-thumbnail/.test(url)));
+});
+
+test('filtra las imágenes devueltas por el extractor externo de Instagram y descarta hosts falsos', () => {
+  const payload = [
+    {
+      status: true,
+      url: 'https://scontent.cdninstagram.com/v/external-photo.jpg?token=abc',
+      thumbnail: 'https://scontent.cdninstagram.com/v/thumbnail.jpg?token=abc'
+    },
+    {
+      status: true,
+      url: 'https://scontent-lax3-2.xx.fbcdn.net/v/external-photo2.webp?token=xyz'
+    },
+    {
+      status: true,
+      url: 'https://evil.example/exfiltrate.jpg'
+    },
+    {
+      status: true,
+      url: 'https://scontent.cdninstagram.com/v/external-video.mp4?token=abc'
+    }
+  ];
+  const urls = extraerUrlsImagenApiInstagramPublica(payload);
+  assert.equal(urls.length, 2);
+  assert.match(urls[0], /external-photo[.]jpg/);
+  assert.match(urls[1], /external-photo2[.]webp/);
+  assert.ok(!urls.some(url => /evil[.]example|thumbnail|external-video/.test(url)));
 });
 
 test('filtra URLs de imágenes desde la salida de gallery-dl', () => {
