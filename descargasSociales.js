@@ -178,6 +178,19 @@ function tipoMimetype(extension, mime = '') {
   return 'document';
 }
 
+function mimetypeDesdeExtension(extension) {
+  const ext = String(extension || '').toLowerCase();
+  const map = {
+    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+    '.webp': 'image/webp', '.gif': 'image/gif', '.avif': 'image/avif', '.bmp': 'image/bmp',
+    '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mov': 'video/quicktime',
+    '.webm': 'video/webm', '.3gp': 'video/3gpp', '.mkv': 'video/x-matroska',
+    '.avi': 'video/x-msvideo', '.mpeg': 'video/mpeg', '.mpg': 'video/mpeg',
+    '.flv': 'video/x-flv', '.ts': 'video/mp2t'
+  };
+  return map[ext] || 'application/octet-stream';
+}
+
 async function descargaDirecta(urlInicial, tempDir, index = 1) {
   let url = normalizarUrl(urlInicial);
   if (!url) throw new Error('El enlace debe ser una URL HTTP/HTTPS pública válida.');
@@ -256,29 +269,13 @@ async function descargaDirecta(urlInicial, tempDir, index = 1) {
     const stat = await fs.promises.stat(destino);
     if (!stat.size || stat.size > MAX_MEDIA_BYTES) throw new Error('El archivo vacío o supera los 100 MB.');
 
-    const mime = contentType || (
-      IMAGE_MIME_EXT[extension] ? extension : null
-    );
+    const responseMime = /^(?:image|video)\//.test(contentType) ? contentType : null;
+    const mime = responseMime || mimetypeDesdeExtension(extension);
     return {
       path: destino,
       nombre: path.basename(destino),
       tipo: tipoMimetype(extension, mime),
-      mimetype: contentType || (
-        extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg' :
-        extension === '.png' ? 'image/png' :
-        extension === '.webp' ? 'image/webp' :
-        extension === '.gif' ? 'image/gif' :
-        extension === '.avif' ? 'image/avif' :
-        extension === '.bmp' ? 'image/bmp' :
-        extension === '.mp4' || extension === '.m4v' ? 'video/mp4' :
-        extension === '.mov' ? 'video/quicktime' :
-        extension === '.webm' ? 'video/webm' :
-        extension === '.3gp' ? 'video/3gpp' :
-        extension === '.mkv' ? 'video/x-matroska' :
-        extension === '.avi' ? 'video/x-msvideo' :
-        extension === '.mpeg' || extension === '.mpg' ? 'video/mpeg' :
-        extension === '.flv' ? 'video/x-flv' : 'application/octet-stream'
-      ),
+      mimetype: mime,
       size: stat.size
     };
   } catch (error) {
