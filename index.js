@@ -515,11 +515,11 @@ async function downloadEncryptedSession(options = {}) {
   return false;
 }
 
-async function deleteEncryptedSession() {
+async function deleteEncryptedSessionFile(filename = ENCRYPTED_SESSION_FILE) {
   if (!sessionSecurityReady()) return false;
 
   try {
-    const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + ENCRYPTED_SESSION_FILE + '?ref=' + encodeURIComponent(SESSION_BRANCH);
+    const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + filename + '?ref=' + encodeURIComponent(SESSION_BRANCH);
     const existing = await githubRequest(url);
 
     if (existing.status === 404) return true;
@@ -533,7 +533,7 @@ async function deleteEncryptedSession() {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        message: 'Eliminar sesión cifrada para nueva vinculación',
+        message: 'Eliminar archivo de sesión inválido: ' + filename,
         sha: file.sha,
         branch: SESSION_BRANCH
       })
@@ -544,12 +544,17 @@ async function deleteEncryptedSession() {
       throw new Error('GitHub rechazó el borrado: HTTP ' + response.status + (details ? ' - ' + details.slice(0, 500) : ''));
     }
 
-    console.log('🗑️ Sesión cifrada anterior eliminada de GitHub.');
+    console.log('🗑️ Archivo de sesión eliminado de GitHub: ' + filename);
     return true;
   } catch (error) {
-    console.error('❌ No se pudo eliminar la sesión cifrada anterior:', error.message);
+    console.error('❌ No se pudo eliminar el archivo de sesión de GitHub (' + filename + '):', error.message);
     return false;
   }
+}
+
+
+async function deleteEncryptedSession() {
+  return deleteEncryptedSessionFile(ENCRYPTED_SESSION_FILE);
 }
 
 async function collectSession() {
@@ -797,7 +802,7 @@ function scheduleReconnect(statusCode) {
     statusCode === DisconnectReason.restartRequired ? 1000 :
     statusCode === 408 ? 3000 :
     statusCode === 428 ? 3000 :
-    statusCode === 440 ? 5000 :
+    statusCode === 440 ? 30000 :
     5000;
 
   const delay = Math.min(
@@ -1511,6 +1516,13 @@ async function startSocketInternal(restoreSession = true) {
           }
         }
 
+        if (rejectedSource === LAST_GOOD_SESSION_FILE && sessionSecurityReady()) {
+          // WhatsApp confirmó que el respaldo también es inválido; borrar ambos
+          // archivos evita intentar restaurar lo mismo tras cada redeploy.
+          await deleteEncryptedSession();
+          await deleteEncryptedSessionFile(LAST_GOOD_SESSION_FILE);
+        }
+        restoredSessionSource = null;
         pairingError = 'WhatsApp rechazó las credenciales guardadas. Genera un nuevo código de vinculación.';
         connectionState = 'desconectado';
         console.error('⚠️ No hay otro respaldo de sesión recuperable; se requiere una nueva vinculación.');
