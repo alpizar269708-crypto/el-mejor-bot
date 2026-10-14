@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
+const dns = require('node:dns/promises');
 const { Readable, Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const youtubeDlExec = require('youtube-dl-exec');
@@ -104,7 +105,7 @@ function normalizarUrl(valor) {
 
   try {
     const url = new URL(candidate);
-    const host = url.hostname.toLowerCase().replace(/\.$/, '');
+    const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
     if (!['http:', 'https:'].includes(url.protocol)) return null;
     if (!host || url.username || url.password) return null;
     if (
@@ -172,8 +173,8 @@ function esImagenExtension(extension) {
 
 function tipoMimetype(extension, mime = '') {
   const normalizedMime = String(mime || '').split(';')[0].trim().toLowerCase();
-  if (esImagenExtension(extension) || normalizedMime.startsWith('image/')) return 'image';
-  if (/^(?:mp4|m4v|mov|webm|3gp)$/i.test(String(extension).replace(/^\./, '')) || normalizedMime.startsWith('video/')) return 'video';
+  if (esImagenExtension(extension) || Object.prototype.hasOwnProperty.call(IMAGE_MIME_EXT, normalizedMime)) return 'image';
+  if (/^(?:mp4|m4v|mov|webm|3gp)$/i.test(String(extension).replace(/^\./, '')) || ['video/mp4', 'video/webm', 'video/quicktime', 'video/3gpp'].includes(normalizedMime)) return 'video';
   return 'document';
 }
 
@@ -190,6 +191,7 @@ async function descargaDirecta(urlInicial, tempDir, index = 1) {
     for (let redirect = 0; redirect <= 5; redirect++) {
       const current = normalizarUrl(url.toString());
       if (!current) throw new Error('El servidor intentó redirigir a una dirección no permitida.');
+      await validarHostPublico(current);
 
       response = await fetch(current, {
         redirect: 'manual',
@@ -204,7 +206,7 @@ async function descargaDirecta(urlInicial, tempDir, index = 1) {
         const location = response.headers.get('location');
         if (!location || redirect === 5) throw new Error('Demasiadas redirecciones al descargar el archivo.');
         url = new URL(location, current);
-        await response.body?.cancel().catch(() => {});
+        try { await response.body?.cancel(); } catch {}
         continue;
       }
       break;
@@ -285,7 +287,21 @@ async function descargaDirecta(urlInicial, tempDir, index = 1) {
     throw error;
   } finally {
     clearTimeout(timeout);
-    await response?.body?.cancel().catch(() => {});
+    try {
+      if (response?.body && !response.bodyUsed) await response.body.cancel();
+    } catch {}
+  }
+}
+
+async function validarHostPublico(url) {
+  const host = url.hostname.replace(/^\[|\]$/g, '');
+  if (net.isIP(host)) {
+    if (esIpPrivada(host)) throw new Error('No se permiten direcciones IP privadas en enlaces de descarga.');
+    return;
+  }
+  const addresses = await dns.lookup(host, { all: true, verbatim: true });
+  if (!addresses.length || addresses.some(record => esIpPrivada(record.address))) {
+    throw new Error('El dominio del enlace no resuelve exclusivamente a direcciones públicas.');
   }
 }
 
@@ -325,6 +341,7 @@ async function listarArchivosMedia(tempDir) {
 }
 
 async function descargarArchivos(url, plataforma = 'auto') {
+  const plataformaEfectiva = plataforma === 'auto' ? (detectarPlataforma(url) || 'auto') : plataforma;
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'social-download-'));
   const output = path.join(tempDir, '%(autonumber)03d.%(ext)s');
   let completed = false;
@@ -332,7 +349,7 @@ async function descargarArchivos(url, plataforma = 'auto') {
   const opcionesBase = {
     output,
     noWarnings: true,
-    ...(!['instagram', 'pinterest', 'tiktok'].includes(plataforma) ? { noPlaylist: true } : {}),
+    ...(!['instagram', 'pinterest', 'tiktok'].includes(plataformaEfectiva) ? { noPlaylist: true } : {}),
     playlistEnd: MAX_MEDIA_FILES,
     maxDownloads: MAX_MEDIA_FILES,
     socketTimeout: 60,
@@ -353,7 +370,7 @@ async function descargarArchivos(url, plataforma = 'auto') {
       facebook: 'https://www.facebook.com/',
       reddit: 'https://www.reddit.com/',
       threads: 'https://www.threads.net/'
-    })[plataforma] || undefined
+    })[plataformaEfectiva] || undefined
   };
   const opcionesVideo = {
     ...opcionesBase,
@@ -364,6 +381,7 @@ async function descargarArchivos(url, plataforma = 'auto') {
   try {
     const parsed = normalizarUrl(url);
     if (!parsed) throw new Error('El enlace debe ser una URL HTTP/HTTPS pública válida.');
+    await validarHostPublico(parsed);
 
     // Los enlaces directos a archivos multimedia no necesitan un extractor;
     // transmitirlos a disco mantiene baja la RAM aunque sean videos grandes.
