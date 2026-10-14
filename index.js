@@ -1588,6 +1588,7 @@ async function startSocketInternal(restoreSession = true) {
   });
 
   newSock.ev.on('messages.upsert', async update => {
+    if (myGeneration !== socketGeneration || sock !== newSock) return;
     // 'append' suele ser historial o mensajes añadidos posteriormente; procesar
     // solo notificaciones nuevas evita ejecutar dos veces comandos/descargas.
     if (update?.type && update.type !== 'notify') return;
@@ -1606,7 +1607,7 @@ async function startSocketInternal(restoreSession = true) {
   });
 
   newSock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
-    if (myGeneration !== socketGeneration) return;
+    if (myGeneration !== socketGeneration || sock !== newSock) return;
 
     if (qr) {
       if (pairingNumber) {
@@ -1674,6 +1675,7 @@ async function startSocketInternal(restoreSession = true) {
         sock = null;
         authState = null;
       }
+      try { newSock.ev.removeAllListeners(); } catch {}
 
       if (
         statusCode === DisconnectReason.loggedOut ||
@@ -1681,6 +1683,7 @@ async function startSocketInternal(restoreSession = true) {
         statusCode === 401
       ) {
         sessionRecoveryFailures += 1;
+        const recoveryGeneration = ++socketGeneration;
         console.error('🚪 WhatsApp rechazó la sesión (LOGGED OUT / BAD SESSION). Se comprobarán las copias cifradas.');
         qrDataUrl = null;
         pairingCode = null;
@@ -1688,6 +1691,11 @@ async function startSocketInternal(restoreSession = true) {
         pairingRequested = false;
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
+
+        await Promise.allSettled([...pendingCredentialWrites]);
+        if (sessionUploadDone) await sessionUploadDone;
+        await sessionIoTail.catch(() => {});
+        if (shuttingDown || recoveryGeneration !== socketGeneration) return;
 
         try {
           fs.rmSync(SESSION_DIR, { recursive: true, force: true });
@@ -1714,13 +1722,13 @@ async function startSocketInternal(restoreSession = true) {
         // intentamos la principal en modo aislado, sin volver al mismo respaldo.
         if (rejectedSource === LAST_GOOD_SESSION_FILE) {
           await deleteEncryptedSessionFile(LAST_GOOD_SESSION_FILE);
-          if (myGeneration !== socketGeneration) return;
+          if (recoveryGeneration !== socketGeneration) return;
 
           const primaryRestored = await downloadEncryptedSession({
             primaryOnly: true,
-            expectedGeneration: myGeneration
+            expectedGeneration: recoveryGeneration
           });
-          if (myGeneration !== socketGeneration) return;
+          if (recoveryGeneration !== socketGeneration) return;
 
           if (primaryRestored) {
             sessionRecoveryFailures = 0;
@@ -1738,14 +1746,14 @@ async function startSocketInternal(restoreSession = true) {
         // Si la principal fue rechazada, no se promueve a last-good.
         const backupRestored = await downloadEncryptedSession({
           backupOnly: true,
-          expectedGeneration: myGeneration
+          expectedGeneration: recoveryGeneration
         });
-        if (myGeneration !== socketGeneration) return;
+        if (recoveryGeneration !== socketGeneration) return;
 
         if (rejectedSource === ENCRYPTED_SESSION_FILE) {
           remotePrimarySessionRejected = true;
           const primaryDeleted = await deleteEncryptedSession();
-          if (myGeneration !== socketGeneration) return;
+          if (recoveryGeneration !== socketGeneration) return;
           if (!primaryDeleted) {
             console.warn('⚠️ No se pudo retirar session.enc rechazada; se omitirá como respaldo hasta guardar una sesión nueva.');
           }
