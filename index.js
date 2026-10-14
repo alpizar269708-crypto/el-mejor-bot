@@ -619,7 +619,7 @@ async function uploadEncryptedSession() {
         // Un session.enc incompleto jamás debe pisar el último respaldo bueno.
         let existingSessionIsRegistered = false;
         try {
-          const encryptedExisting = Buffer.from(existingFile.content.replace(/\\n/g, ''), 'base64').toString('utf8');
+          const encryptedExisting = Buffer.from(existingFile.content.replace(/\n/g, ''), 'base64').toString('utf8');
           const filesExisting = JSON.parse(decryptSession(encryptedExisting));
           const credsExisting = filesExisting['creds.json']
             ? JSON.parse(Buffer.from(filesExisting['creds.json'], 'base64').toString('utf8'))
