@@ -66,20 +66,20 @@ test('no confunde URLs desnudas con comandos de plataforma', () => {
 });
 
 test('extrae imágenes públicas de Instagram desde el JSON del post y Open Graph', () => {
-  const html = String.raw\`<html>
-    <meta property="og:image" content="https://scontent.cdninstagram.com/thumb.jpg?stp=abc&amp;token=xyz">
-    <script type="application/json">
-      {"display_url":"https:\\/\\/scontent.cdninstagram.com\\/v\\/real1.jpg?x=1\\u0026token=abc",
-       "image_versions2":{"candidates":[{"url":"https:\\/\\/scontent.cdninstagram.com\\/v\\/real2.jpg?x=2"}]},
-       "image_url":"https:\\/\\/evil.example\\/not-a-real-instagram-image.jpg"}
-    </script>
-  </html>\`;
+  const html =
+    '<html><meta property="og:image" content="https://scontent.cdninstagram.com/thumb.jpg?stp=abc&amp;token=xyz">' +
+    '<script type="application/json">' +
+    '{"display_url":"https:\\/\\/scontent.cdninstagram.com\\/v\\/real1.jpg?x=1\\u0026token=abc",' +
+    '"image_versions2":{"candidates":[{"url":"https:\\/\\/scontent.cdninstagram.com\\/v\\/real2.jpg?x=2"}]},' +
+    '"image_url":"https:\\/\\/evil.example\\/not-a-real-instagram-image.jpg"}' +
+    '</script></html>';
+
   const urls = extraerUrlsImagenInstagram(html);
   assert.equal(urls.length, 3);
-  assert.match(urls[0], /real1\\.jpg/);
-  assert.match(urls[1], /real2\\.jpg/);
-  assert.match(urls[2], /thumb\\.jpg/);
-  assert.ok(urls.every(value => /(?:^|\\.)cdninstagram\\.com\\//.test(new URL(value).host + new URL(value).pathname)));
+  assert.match(urls[0], /real1[.]jpg/);
+  assert.match(urls[1], /real2[.]jpg/);
+  assert.match(urls[2], /thumb[.]jpg/);
+  assert.ok(urls.every(value => new URL(value).hostname.endsWith('cdninstagram.com')));
   assert.ok(!urls.some(value => value.includes('evil.example')));
 });
 
