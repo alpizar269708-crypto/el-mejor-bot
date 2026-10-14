@@ -11,3 +11,15 @@ services:
         value: "24"
       - key: PORT
         value: "3000"
+      - key: GITHUB_REPO
+        value: alpizar269708-crypto/el-mejor-bot
+      - key: SESSION_BRANCH
+        value: session-data
+      - key: MEMORY_BRANCH
+        value: memory-data
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: SESSION_PASSWORD
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
