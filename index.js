@@ -464,6 +464,7 @@ async function downloadEncryptedSession(options = {}) {
   }
 
   const backupOnly = options.backupOnly === true;
+  const expectedGeneration = options.expectedGeneration;
 
   async function tryRestore(filename, label) {
     const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + filename + '?ref=' + encodeURIComponent(SESSION_BRANCH);
@@ -484,6 +485,11 @@ async function downloadEncryptedSession(options = {}) {
       validateSessionSnapshot(files);
     } catch (error) {
       console.warn('⚠️ Se ignora ' + filename + ': ' + error.message);
+      return false;
+    }
+
+    if (expectedGeneration !== undefined && expectedGeneration !== socketGeneration) {
+      console.warn('⏭️ Se cancela la restauración de ' + filename + ': empezó otra operación de sesión.');
       return false;
     }
 
@@ -825,17 +831,36 @@ function scheduleReconnect(statusCode) {
 
 async function startSocketAfterWake() {
   if (shuttingDown) return;
-  if (connectionState === 'conectado' || connectionState === 'conectando') return;
+
+  if (startupPromise && !startupReady) {
+    try { await startupPromise; } catch {}
+  }
+  if (shuttingDown) return;
+
+  // Una vinculación manual es dueña de la carpeta de sesión hasta que termina
+  // de inicializar su socket. El keepalive no puede competir con ella.
+  if (loginRefreshPromise) {
+    try { await loginRefreshPromise; } catch {}
+    return;
+  }
+  if (connectionState === 'conectado' || connectionState === 'conectando' || startSocketPromise) return;
 
   const credsPath = path.join(SESSION_DIR, 'creds.json');
-
   if (!fs.existsSync(credsPath) && sessionSecurityReady()) {
-    await downloadEncryptedSession();
+    const expectedGeneration = socketGeneration;
+    await downloadEncryptedSession({ expectedGeneration });
+    if (shuttingDown || expectedGeneration !== socketGeneration || loginRefreshPromise) return;
   }
 
   if (fs.existsSync(credsPath)) {
-    const saved = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
-    if (saved?.registered) {
+    let saved;
+    try {
+      saved = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
+    } catch (error) {
+      console.error('⚠️ Credenciales locales inválidas al despertar:', error.message);
+      return;
+    }
+    if (saved?.registered === true) {
       await startSocket(false);
     }
   }
@@ -860,6 +885,9 @@ let pairingError = null;
 let lastQrAt = 0;
 let loginRefreshPromise = null;
 let startSocketPromise = null;
+let startupPromise = null;
+let startupReady = false;
+const pendingCredentialWrites = new Set();
 let connectionState = 'desconectado';
 let reconnectTimer = null;
 let reconnectAttempts = 0;
@@ -1336,13 +1364,20 @@ async function restartForFreshLogin() {
   if (loginRefreshPromise) return loginRefreshPromise;
 
   loginRefreshPromise = (async () => {
-    // Esperar a que termine cualquier restauración/inicio en curso antes de
-    // cerrar el socket anterior y crear uno nuevo para la vinculación manual.
+    // No tocar la carpeta mientras el arranque inicial todavía está restaurando
+    // el respaldo cifrado remoto.
+    if (startupPromise && !startupReady) {
+      try { await startupPromise; } catch {}
+    }
+    // Esperar al socket en curso y bloquear inmediatamente cualquier callback
+    // viejo, para que no pueda restaurar o escribir encima de la nueva sesión.
     if (startSocketPromise) {
       try { await startSocketPromise; } catch {}
     }
     clearTimeout(reconnectTimer);
+    clearTimeout(uploadTimer);
     socketGeneration += 1;
+    await Promise.allSettled([...pendingCredentialWrites]);
     restoredSessionSource = null;
     pairingError = null;
     pairingCode = null;
@@ -1390,11 +1425,14 @@ async function startSocketInternal(restoreSession = true) {
   if (shuttingDown) return null;
   if (sock && (connectionState === 'conectado' || connectionState === 'conectando')) return sock;
 
+  const generationBeforeRestore = socketGeneration;
   if (restoreSession && sessionSecurityReady()) {
-    await downloadEncryptedSession();
+    await downloadEncryptedSession({ expectedGeneration: generationBeforeRestore });
+    if (shuttingDown || generationBeforeRestore !== socketGeneration) return null;
   }
 
   const socketAuthState = await useMultiFileAuthState(SESSION_DIR);
+  if (shuttingDown || generationBeforeRestore !== socketGeneration) return null;
   authState = socketAuthState;
   connectionState = 'conectando';
   const myGeneration = ++socketGeneration;
@@ -1415,22 +1453,32 @@ async function startSocketInternal(restoreSession = true) {
 
   sock = newSock;
 
+  // Baileys puede emitir varios creds.update seguidos. Encadenarlos evita que
+  // dos escrituras simultáneas de creds.json/key stores se pisen entre sí.
+  let credentialWriteTail = Promise.resolve();
   newSock.ev.on('creds.update', async () => {
     if (myGeneration !== socketGeneration || sock !== newSock) return;
-    try {
-      await socketAuthState.saveCreds();
 
-      // Las credenciales se guardan localmente en cada actualización,
-      // pero el respaldo remoto SOLO se actualiza cuando registered=true.
-      // Así un reinicio/deploy durante una vinculación nunca pisa una sesión válida.
+    const task = credentialWriteTail.then(async () => {
+      if (myGeneration !== socketGeneration || sock !== newSock) return;
+      await socketAuthState.saveCreds();
+      if (myGeneration !== socketGeneration || sock !== newSock) return;
+
       if (socketAuthState?.state?.creds?.registered === true) {
-        // No dependemos de que el socket siga marcado como conectado.
-        // Render puede enviar SIGTERM durante una transición y la sesión
-        // ya registrada debe respaldarse de todos modos.
         scheduleSessionUpload(1500);
       }
-    } catch (error) {
+    });
+    pendingCredentialWrites.add(task);
+    credentialWriteTail = task.catch(error => {
       console.error('❌ Error guardando credenciales locales:', error.message);
+    });
+
+    try {
+      await task;
+    } catch (error) {
+      console.error('❌ Falló una escritura serializada de credenciales:', error.message);
+    } finally {
+      pendingCredentialWrites.delete(task);
     }
   });
 
@@ -1533,8 +1581,10 @@ async function startSocketInternal(restoreSession = true) {
         // Si WhatsApp rechaza la sesión principal, probar una sola vez el
         // respaldo anterior. No borrar el respaldo antes de verificarlo.
         if (rejectedSource !== LAST_GOOD_SESSION_FILE && sessionSecurityReady()) {
-          const backupRestored = await downloadEncryptedSession({ backupOnly: true });
+          const backupRestored = await downloadEncryptedSession({ backupOnly: true, expectedGeneration: myGeneration });
+          if (myGeneration !== socketGeneration) return;
           await deleteEncryptedSession(); // Evita volver a cargar la sesión principal rechazada en el próximo arranque.
+          if (myGeneration !== socketGeneration) return;
           if (backupRestored) {
             sessionRecoveryFailures = 0;
             pairingError = null;
@@ -1586,7 +1636,10 @@ async function startSocketInternal(restoreSession = true) {
 
 app.get('/', async (_req, res) => {
   try {
-    if (!authState?.state?.creds?.registered && connectionState === 'desconectado') {
+    if (startupPromise && !startupReady) {
+      try { await startupPromise; } catch {}
+    }
+    if (startupReady && !authState?.state?.creds?.registered && connectionState === 'desconectado') {
       await startSocket(false);
     }
   } catch (error) {
@@ -1873,51 +1926,53 @@ async function gracefulShutdown(signal) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-app.listen(PORT, async () => {
+app.listen(PORT, () => {
   console.log('el mejor bot en puerto ' + PORT);
 
-  try {
-    if (sessionSecurityReady()) {
-      await downloadEncryptedSession();
-      await loadPersistentMemory();
-    } else {
-      console.warn('⚠️ Render no tiene configurados GITHUB_TOKEN + SESSION_PASSWORD; la sesión y memoria no podrán sobrevivir a un redeploy.');
-    }
-
-    const credsPath = path.join(SESSION_DIR, 'creds.json');
-
-    if (fs.existsSync(credsPath)) {
-      const saved = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
-
-      const registered = saved?.registered === true;
-
-      console.log(
-        '🔐 Credenciales restauradas. registered=' +
-        (registered ? 'true' : 'false') +
-        (registered ? '. Iniciando WhatsApp...' : '. La sesión está incompleta; esperando una nueva vinculación.')
-      );
-
-      if (registered) {
-        await startSocket(false);
+  // Express comienza a escuchar antes de que termine la restauración remota.
+  // Marcar esta promesa permite bloquear /, keepalive y un nuevo login durante
+  // esa ventana; así nunca se crea un socket con una carpeta vacía.
+  startupPromise = (async () => {
+    try {
+      if (sessionSecurityReady()) {
+        await downloadEncryptedSession();
+        await loadPersistentMemory();
       } else {
-        // No dejar un socket colgado con credenciales de una vinculación
-        // que nunca terminó. Limpiamos esa sesión incompleta para que
-        // /iniciar pueda generar un código nuevo correctamente.
-        try {
-          fs.rmSync(SESSION_DIR, { recursive: true, force: true });
-        } catch {}
-        fs.mkdirSync(SESSION_DIR, { recursive: true });
-        // El respaldo remoto NO se elimina automáticamente. Si existe, se
-        // conserva para poder recuperarlo tras un reinicio. Una nueva sesión
-        // válida lo reemplazará mediante uploadEncryptedSession().
-        connectionState = 'desconectado';
-        pairingError = 'La sesión anterior estaba incompleta. Genera un nuevo código de vinculación.';
+        console.warn('⚠️ Render no tiene configurados GITHUB_TOKEN + SESSION_PASSWORD; la sesión y memoria no podrán sobrevivir a un redeploy.');
       }
-    } else {
-      console.log('Sin sesión local. Esperando QR o código solicitado por el usuario.');
+
+      const credsPath = path.join(SESSION_DIR, 'creds.json');
+
+      if (fs.existsSync(credsPath)) {
+        const saved = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
+        const registered = saved?.registered === true;
+
+        console.log(
+          '🔐 Credenciales restauradas. registered=' +
+          (registered ? 'true' : 'false') +
+          (registered ? '. Iniciando WhatsApp...' : '. La sesión está incompleta; esperando una nueva vinculación.')
+        );
+
+        if (registered) {
+          await startSocket(false);
+        } else {
+          try {
+            fs.rmSync(SESSION_DIR, { recursive: true, force: true });
+          } catch {}
+          fs.mkdirSync(SESSION_DIR, { recursive: true });
+          // Mantener el respaldo remoto para que una vinculación interrumpida
+          // nunca destruya la última sesión válida.
+          connectionState = 'desconectado';
+          pairingError = 'La sesión anterior estaba incompleta. Genera un nuevo código de vinculación.';
+        }
+      } else {
+        console.log('Sin sesión válida. Esperando QR o código solicitado por el usuario.');
+      }
+    } catch (error) {
+      console.error('❌ Error restaurando sesión inicial:', error.message);
+      scheduleReconnect(null);
     }
-  } catch (error) {
-    console.error('❌ Error restaurando sesión inicial:', error.message);
-    scheduleReconnect(null);
-  }
+  })().finally(() => {
+    startupReady = true;
+  });
 });
