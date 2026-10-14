@@ -1361,6 +1361,8 @@ async function restartForFreshLogin() {
     socketGeneration += 1;
     await Promise.allSettled([...pendingCredentialWrites]);
     if (sessionUploadDone) await sessionUploadDone;
+    clearTimeout(uploadTimer);
+    uploadAgain = false;
     await sessionIoTail.catch(() => {});
     restoredSessionSource = null;
     pairingError = null;
@@ -1919,6 +1921,9 @@ async function gracefulShutdown(signal) {
   console.log('🛑 Señal de apagado:', signal);
 
   try {
+    await Promise.allSettled([...pendingCredentialWrites]);
+    if (sessionUploadDone) await sessionUploadDone;
+    await sessionIoTail.catch(() => {});
     if (authState?.saveCreds) await authState.saveCreds();
 
     // Al apagar Render, jamás subir una sesión de vinculación incompleta.
