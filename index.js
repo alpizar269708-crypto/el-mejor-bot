@@ -464,7 +464,8 @@ async function downloadEncryptedSession(options = {}) {
   }
 
   const backupOnly = options.backupOnly === true;
-  const expectedGeneration = options.expectedGeneration;
+  // Cada descarga restaura únicamente si la sesión no cambió durante el fetch.
+  const expectedGeneration = options.expectedGeneration ?? socketGeneration;
 
   async function tryRestore(filename, label) {
     const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + filename + '?ref=' + encodeURIComponent(SESSION_BRANCH);
@@ -488,7 +489,7 @@ async function downloadEncryptedSession(options = {}) {
       return false;
     }
 
-    if (expectedGeneration !== undefined && expectedGeneration !== socketGeneration) {
+    if (shuttingDown || expectedGeneration !== socketGeneration) {
       console.warn('⏭️ Se cancela la restauración de ' + filename + ': empezó otra operación de sesión.');
       return false;
     }
@@ -948,15 +949,25 @@ async function requestPairingCodeIfNeeded() {
   if (!sock || !pairingNumber || pairingRequested) return;
   if (authState?.state?.creds?.registered) return;
 
+  const requestSocket = sock;
+  const requestGeneration = socketGeneration;
+  const requestNumber = pairingNumber;
   pairingRequested = true;
 
   try {
-    const code = await sock.requestPairingCode(pairingNumber);
+    const code = await requestSocket.requestPairingCode(requestNumber);
+    if (
+      requestSocket !== sock ||
+      requestGeneration !== socketGeneration ||
+      requestNumber !== pairingNumber
+    ) return;
+
     pairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
     pairingError = null;
     qrDataUrl = null;
     console.log('\\n🔢 CÓDIGO DE VINCULACIÓN:', pairingCode, '\\n');
   } catch (error) {
+    if (requestGeneration !== socketGeneration || requestSocket !== sock) return;
     pairingRequested = false;
     pairingError = error?.message || 'No se pudo generar el código.';
     console.error('❌ Error generando código de vinculación:', pairingError);
@@ -1494,7 +1505,9 @@ async function startSocketInternal(restoreSession = true) {
         setTimeout(() => requestPairingCodeIfNeeded(), 800);
       } else {
         try {
-          qrDataUrl = await QRCode.toDataURL(qr);
+          const generatedQr = await QRCode.toDataURL(qr);
+          if (myGeneration !== socketGeneration || sock !== newSock) return;
+          qrDataUrl = generatedQr;
           pairingCode = null;
           lastQrAt = Date.now();
         } catch (error) {
