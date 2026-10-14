@@ -11,7 +11,9 @@ const youtubeDlExec = require('youtube-dl-exec');
 const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
 
 const youtubedl = youtubeDlExec;
-const MAX_MEDIA_BYTES = 100 * 1024 * 1024;
+// WhatsApp documenta un límite de vídeo de 100 MB; usar MB decimales evita
+// que un archivo de 100 MiB rebase el límite real del cliente.
+const MAX_MEDIA_BYTES = 100_000_000;
 const TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_COLA_DESCARGAS = 100;
 const MAX_MEDIA_FILES = 10;
@@ -182,6 +184,40 @@ function extraerUrl(texto, plataforma = 'auto') {
   return null;
 }
 
+
+function analizarSolicitudDescarga(texto) {
+  const trimmed = String(texto || '').trim();
+  if (!trimmed) return null;
+
+  const generic = trimmed.match(/^(?:descargar|descarga|download)(?:\\s+([\\s\\S]+))?$/i);
+  if (generic) {
+    return {
+      tipo: 'generic',
+      plataforma: 'auto',
+      enlace: String(generic[1] || '').trim()
+    };
+  }
+
+  // Solo tratarlo como comando si la palabra está separada por espacio o fin
+  // de texto; así "instagram.com/video" y "youtube.com/watch" siguen siendo URLs.
+  const command = trimmed.match(/^(tiktok|instagram|x|twitter|youtube|pinterest|facebook|reddit|threads)(?=\\s|$)/i);
+  if (command) {
+    const rawPlatform = command[1].toLowerCase();
+    return {
+      tipo: 'platform',
+      plataforma: rawPlatform === 'twitter' ? 'x' : rawPlatform,
+      enlace: trimmed.slice(command[0].length).trim()
+    };
+  }
+
+  const isBareUrl = /^(?:https?:\\/\\/)?(?:[a-z0-9.-]+)(?::\\d{1,5})?(?:[/?#][^\\s]*)?$/i.test(trimmed);
+  if (isBareUrl) {
+    return { tipo: 'url', plataforma: 'auto', enlace: trimmed };
+  }
+
+  return null;
+}
+
 function limpiarDirectorio(ruta) {
   return fs.promises.rm(ruta, { recursive: true, force: true });
 }
@@ -204,9 +240,27 @@ function esImagenExtension(extension) {
 }
 
 function tipoMimetype(extension, mime = '') {
+  const normalizedExtension = String(extension || '').toLowerCase();
   const normalizedMime = String(mime || '').split(';')[0].trim().toLowerCase();
-  if (esImagenExtension(extension) || Object.prototype.hasOwnProperty.call(IMAGE_MIME_EXT, normalizedMime)) return 'image';
-  if (/^(?:mp4|m4v|mov|webm|3gp)$/i.test(String(extension).replace(/^\./, '')) || ['video/mp4', 'video/webm', 'video/quicktime', 'video/3gpp'].includes(normalizedMime)) return 'video';
+
+  if (
+    esImagenExtension(normalizedExtension) ||
+    Object.prototype.hasOwnProperty.call(IMAGE_MIME_EXT, normalizedMime)
+  ) return 'image';
+
+  // Estos formatos están admitidos como vídeos por WhatsApp. El transporte
+  // MPEG-TS se conserva como documento porque no figura entre sus formatos de vídeo.
+  const videoExtensions = new Set([
+    '.mp4', '.m4v', '.mov', '.webm', '.3gp', '.mkv', '.avi', '.mpeg', '.mpg', '.flv'
+  ]);
+  const videoMimeTypes = new Set([
+    'video/mp4', 'video/webm', 'video/quicktime', 'video/3gpp',
+    'video/x-matroska', 'video/x-msvideo', 'video/mpeg', 'video/x-flv'
+  ]);
+
+  if (videoExtensions.has(normalizedExtension) || videoMimeTypes.has(normalizedMime)) {
+    return 'video';
+  }
   return 'document';
 }
 
@@ -591,6 +645,11 @@ module.exports = {
   comandoDescargaSocial,
   descargarArchivos,
   extraerUrl,
+  analizarSolicitudDescarga,
+  tipoMimetype,
+  descargaDirecta,
+  validarHostPublico,
+  esIpPrivada,
   detectarPlataforma,
   normalizarUrl,
   liberarColaDescargas,
