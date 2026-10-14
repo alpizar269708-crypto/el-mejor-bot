@@ -146,7 +146,7 @@ async function descargarArchivos(url, plataforma) {
       const stat = await fs.promises.stat(ruta);
       if (!stat.size || stat.size > MAX_VIDEO_BYTES) continue;
       const buffer = await fs.promises.readFile(ruta);
-      if (buffer.length < 1000) continue;
+      if (buffer.length === 0) continue;
       const extension = path.extname(nombre).toLowerCase();
       const esImagen = /\.(?:jpe?g|png|webp|avif)$/i.test(extension);
       archivos.push({
@@ -219,6 +219,7 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma) {
 
 module.exports = {
   comandoDescargaSocial,
+  extraerUrl,
   liberarColaDescargas,
   estadoColaDescargas: () => ({ pendientes: colaDescargas.length, descargaActiva,
     segundosActiva: trabajoActivoDesde ? Math.floor((Date.now() - trabajoActivoDesde) / 1000) : 0 })
