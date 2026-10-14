@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extraerUrl, analizarSolicitudDescarga, detectarPlataforma, tipoMimetype, tipoEnvioWhatsApp, descargaDirecta, MAX_MEDIA_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_VIDEO_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
+const { extraerUrl, analizarSolicitudDescarga, detectarPlataforma, tipoMimetype, tipoEnvioWhatsApp, descargaDirecta, createMediaSizeLimiter, MAX_MEDIA_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_VIDEO_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
 const { inspectWebpAnimation, parseMediaSizeBytes } = require('../stickerUtils');
 const { validateSessionSnapshot } = require('../sessionUtils');
 
@@ -143,6 +143,72 @@ test('descarga un enlace directo en streaming sin cargar toda la respuesta en un
     assert.equal(result.mimetype, 'video/mp4');
     assert.equal(result.size, payload.length);
     assert.deepEqual(await fs.readFile(result.path), payload);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('la limitación por streaming rechaza bytes por encima del máximo aunque no exista Content-Length', async () => {
+  const { Readable, Writable } = require('node:stream');
+  const { pipeline } = require('node:stream/promises');
+  const limiter = createMediaSizeLimiter(5);
+  const sink = new Writable({
+    write(_chunk, _encoding, callback) { callback(); }
+  });
+  await assert.rejects(
+    pipeline(Readable.from([Buffer.from('1234'), Buffer.from('5678')]), limiter, sink),
+    /superó el límite de descarga de 5 bytes/
+  );
+});
+
+test('la descarga directa infiere el formato por MIME si la URL no tiene extensión', async t => {
+  const dns = require('node:dns/promises');
+  const fs = require('node:fs/promises');
+  const os = require('node:os');
+  const path = require('node:path');
+  const payload = Buffer.from('a tiny png payload');
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bot-mime-download-test-'));
+
+  t.mock.method(dns, 'lookup', async () => [{ address: '93.184.216.34', family: 4 }]);
+  t.mock.method(globalThis, 'fetch', async () => new Response(payload, {
+    status: 200,
+    headers: { 'content-type': 'image/png', 'content-length': String(payload.length) }
+  }));
+
+  try {
+    const result = await descargaDirecta('https://cdn.example.org/get?id=123', tempDir, 1);
+    assert.equal(result.tipo, 'image');
+    assert.equal(result.mimetype, 'image/png');
+    assert.equal(path.extname(result.path), '.png');
+    assert.deepEqual(await fs.readFile(result.path), payload);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('la descarga directa infiere el formato por Content-Disposition si no hay extensión ni MIME específico', async t => {
+  const dns = require('node:dns/promises');
+  const fs = require('node:fs/promises');
+  const os = require('node:os');
+  const path = require('node:path');
+  const payload = Buffer.from('a tiny movie payload');
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bot-disposition-test-'));
+
+  t.mock.method(dns, 'lookup', async () => [{ address: '93.184.216.34', family: 4 }]);
+  t.mock.method(globalThis, 'fetch', async () => new Response(payload, {
+    status: 200,
+    headers: {
+      'content-type': 'application/octet-stream',
+      'content-disposition': 'attachment; filename="holiday.mkv"',
+      'content-length': String(payload.length)
+    }
+  }));
+
+  try {
+    const result = await descargaDirecta('https://cdn.example.org/download?id=abc', tempDir, 1);
+    assert.equal(result.tipo, 'video');
+    assert.equal(path.extname(result.path), '.mkv');
+    assert.equal(result.mimetype, 'video/x-matroska');
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
