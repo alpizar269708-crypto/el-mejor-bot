@@ -33,6 +33,7 @@ const SESSION_BRANCH = process.env.SESSION_BRANCH || 'session-data';
 const SESSION_PASSWORD = process.env.SESSION_PASSWORD;
 const ENCRYPTED_SESSION_FILE = 'session.enc';
 const LAST_GOOD_SESSION_FILE = 'session.last-good.enc';
+let restoredSessionSource = null;
 
 // Memoria persistente del bot.
 // Se mantiene en RAM para máxima velocidad y se sincroniza en segundo plano
@@ -398,11 +399,69 @@ function scheduleMemorySave(delay = 120000) {
   }, delay);
 }
 
-async function downloadEncryptedSession() {
+function restoreSessionFiles(files, filename) {
+  const restoreDir = path.join(path.dirname(SESSION_DIR), '.session-restore-' + process.pid + '-' + crypto.randomBytes(6).toString('hex'));
+  const previousDir = SESSION_DIR + '.previous-' + process.pid + '-' + crypto.randomBytes(4).toString('hex');
+  let movedPrevious = false;
+
+  try {
+    fs.mkdirSync(restoreDir, { recursive: true });
+
+    for (const [relativePath, base64] of Object.entries(files)) {
+      if (
+        typeof relativePath !== 'string' ||
+        !relativePath ||
+        path.isAbsolute(relativePath) ||
+        relativePath.split(/[\\/]/).includes('..') ||
+        typeof base64 !== 'string'
+      ) {
+        throw new Error('Archivo/ruta de sesión inválido');
+      }
+
+      const target = path.resolve(restoreDir, relativePath);
+      if (!target.startsWith(restoreDir + path.sep)) {
+        throw new Error('Ruta de sesión fuera de la carpeta temporal');
+      }
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, Buffer.from(base64, 'base64'));
+    }
+
+    const credsPath = path.join(restoreDir, 'creds.json');
+    if (!fs.existsSync(credsPath)) throw new Error(filename + ': falta creds.json');
+    const creds = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
+    if (creds?.registered !== true) throw new Error(filename + ': credenciales sin vinculación confirmada');
+
+    // Preparar la restauración completa fuera de SESSION_DIR para no dejar
+    // credenciales a medias si el proceso falla durante la escritura.
+    if (fs.existsSync(SESSION_DIR)) {
+      fs.renameSync(SESSION_DIR, previousDir);
+      movedPrevious = true;
+    }
+
+    try {
+      fs.renameSync(restoreDir, SESSION_DIR);
+    } catch (error) {
+      if (movedPrevious && !fs.existsSync(SESSION_DIR)) {
+        try { fs.renameSync(previousDir, SESSION_DIR); } catch {}
+      }
+      throw error;
+    }
+
+    if (movedPrevious) fs.rmSync(previousDir, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    fs.rmSync(restoreDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function downloadEncryptedSession(options = {}) {
   if (!sessionSecurityReady()) {
     console.warn('⚠️ Sesión GitHub NO disponible: faltan GITHUB_TOKEN o SESSION_PASSWORD.');
     return false;
   }
+
+  const backupOnly = options.backupOnly === true;
 
   async function tryRestore(filename, label) {
     const url = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + filename + '?ref=' + encodeURIComponent(SESSION_BRANCH);
@@ -415,12 +474,10 @@ async function downloadEncryptedSession() {
     }
 
     const file = await response.json();
-    const encrypted = Buffer.from(file.content.replace(/\n/g, ''), 'base64').toString('utf8');
+    const encrypted = Buffer.from(file.content.replace(/\\n/g, ''), 'base64').toString('utf8');
     const decrypted = decryptSession(encrypted);
     const files = JSON.parse(decrypted);
 
-    // Nunca restaurar una copia remota de una vinculación que quedó a medias.
-    // Devolver false permite probar session.last-good.enc antes de rendirse.
     let savedCreds;
     try {
       if (!files['creds.json']) throw new Error('Falta creds.json');
@@ -434,45 +491,34 @@ async function downloadEncryptedSession() {
       return false;
     }
 
-    fs.rmSync(SESSION_DIR, { recursive: true, force: true });
-    fs.mkdirSync(SESSION_DIR, { recursive: true });
-
-    for (const [relativePath, base64] of Object.entries(files)) {
-      const target = path.join(SESSION_DIR, relativePath);
-      if (!target.startsWith(SESSION_DIR + path.sep)) throw new Error('Ruta de sesión inválida');
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, Buffer.from(base64, 'base64'));
-    }
-
+    restoreSessionFiles(files, filename);
+    restoredSessionSource = filename;
     console.log(label);
     return true;
   }
 
-  try {
-    if (await tryRestore(ENCRYPTED_SESSION_FILE, 'Sesión cifrada restaurada desde GitHub.')) {
-      return true;
-    }
-
-    if (await tryRestore(LAST_GOOD_SESSION_FILE, '🛡️ Sesión restaurada desde el respaldo de última sesión válida.')) {
-      return true;
-    }
-
-    console.log('ℹ️ GitHub: todavía no existe un respaldo de sesión.');
-    return false;
-  } catch (error) {
-    console.error('⚠️ No se pudo restaurar la sesión principal:', error.message);
-
+  // Restaurar el archivo principal salvo que el código de WhatsApp ya haya
+  // confirmado que no es válido; en ese caso probamos únicamente el respaldo.
+  if (!backupOnly) {
     try {
-      if (await tryRestore(LAST_GOOD_SESSION_FILE, '🛡️ Sesión restaurada desde el respaldo de última sesión válida.')) {
-        return true;
-      }
-    } catch (backupError) {
-      console.error('❌ Tampoco se pudo restaurar el respaldo de seguridad:', backupError.message);
+      if (await tryRestore(ENCRYPTED_SESSION_FILE, 'Sesión cifrada restaurada desde GitHub.')) return true;
+    } catch (error) {
+      console.error('⚠️ No se pudo restaurar session.enc:', error.message);
     }
-
-    return false;
   }
+
+  try {
+    if (await tryRestore(LAST_GOOD_SESSION_FILE, '🛡️ Sesión restaurada desde el respaldo de última sesión válida.')) return true;
+  } catch (error) {
+    console.error('❌ No se pudo restaurar session.last-good.enc:', error.message);
+  }
+
+  if (backupOnly) console.warn('⚠️ No se pudo recuperar ninguna sesión válida desde el respaldo.');
+  else console.log('ℹ️ GitHub no tiene una sesión válida disponible para restaurar.');
+  restoredSessionSource = null;
+  return false;
 }
+
 async function deleteEncryptedSession() {
   if (!sessionSecurityReady()) return false;
 
@@ -585,6 +631,10 @@ async function uploadEncryptedSession() {
     const files = await collectSession();
     if (!files['creds.json']) {
       throw new Error('La sesión está vacía o creds.json no pudo leerse');
+    }
+    const snapshotCreds = JSON.parse(Buffer.from(files['creds.json'], 'base64').toString('utf8'));
+    if (snapshotCreds?.registered !== true) {
+      throw new Error('El snapshot de sesión dejó de estar registrado; se cancela el guardado para proteger el respaldo.');
     }
 
     const encrypted = encryptSession(JSON.stringify(files));
@@ -1216,6 +1266,9 @@ async function restartForFreshLogin() {
   if (loginRefreshPromise) return loginRefreshPromise;
 
   loginRefreshPromise = (async () => {
+    clearTimeout(reconnectTimer);
+    socketGeneration += 1;
+    restoredSessionSource = null;
     pairingError = null;
     pairingCode = null;
     qrDataUrl = null;
@@ -1252,7 +1305,8 @@ async function startSocket(restoreSession = true) {
     await downloadEncryptedSession();
   }
 
-  authState = await useMultiFileAuthState(SESSION_DIR);
+  const socketAuthState = await useMultiFileAuthState(SESSION_DIR);
+  authState = socketAuthState;
   connectionState = 'conectando';
   const myGeneration = ++socketGeneration;
 
@@ -1273,13 +1327,14 @@ async function startSocket(restoreSession = true) {
   sock = newSock;
 
   newSock.ev.on('creds.update', async () => {
+    if (myGeneration !== socketGeneration || sock !== newSock) return;
     try {
-      await authState.saveCreds();
+      await socketAuthState.saveCreds();
 
       // Las credenciales se guardan localmente en cada actualización,
       // pero el respaldo remoto SOLO se actualiza cuando registered=true.
       // Así un reinicio/deploy durante una vinculación nunca pisa una sesión válida.
-      if (authState?.state?.creds?.registered === true) {
+      if (socketAuthState?.state?.creds?.registered === true) {
         // No dependemos de que el socket siga marcado como conectado.
         // Render puede enviar SIGTERM durante una transición y la sesión
         // ya registrada debe respaldarse de todos modos.
@@ -1368,8 +1423,8 @@ async function startSocket(restoreSession = true) {
         authState = null;
       }
 
-      if (statusCode === DisconnectReason.loggedOut) {
-        console.error('🚪 WhatsApp indicó LOGGED OUT. No se reconectará automáticamente.');
+      if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
+        console.error('🚪 WhatsApp rechazó la sesión (LOGGED OUT / 401). Se comprobará el respaldo antes de pedir una nueva vinculación.');
         qrDataUrl = null;
         pairingCode = null;
         pairingNumber = null;
@@ -1379,10 +1434,27 @@ async function startSocket(restoreSession = true) {
           fs.rmSync(SESSION_DIR, { recursive: true, force: true });
         } catch {}
         fs.mkdirSync(SESSION_DIR, { recursive: true });
-        // NO borrar automáticamente el respaldo remoto. Si Render reinicia
-        // mientras WhatsApp está cerrando la conexión, el respaldo válido debe
-        // seguir disponible para el siguiente arranque. Una nueva vinculación
-        // lo reemplazará únicamente cuando quede registrada.
+
+        const rejectedSource = restoredSessionSource;
+        restoredSessionSource = null;
+
+        // Si WhatsApp rechaza la sesión principal, probar una sola vez el
+        // respaldo anterior. No borrar el respaldo antes de verificarlo.
+        if (rejectedSource === ENCRYPTED_SESSION_FILE && sessionSecurityReady()) {
+          const backupRestored = await downloadEncryptedSession({ backupOnly: true });
+          await deleteEncryptedSession(); // Evita volver a cargar la sesión principal rechazada en el próximo arranque.
+          if (backupRestored) {
+            sessionRecoveryFailures = 0;
+            pairingError = null;
+            console.warn('🛡️ Sesión principal rechazada; se intentará reconectar con session.last-good.enc.');
+            scheduleReconnect(statusCode);
+            return;
+          }
+        }
+
+        pairingError = 'WhatsApp rechazó las credenciales guardadas. Genera un nuevo código de vinculación.';
+        connectionState = 'desconectado';
+        console.error('⚠️ No hay otro respaldo de sesión recuperable; se requiere una nueva vinculación.');
         return;
       }
 
@@ -1390,42 +1462,20 @@ async function startSocket(restoreSession = true) {
         pairingRequested = false;
       }
 
-      // Una sesión restaurada puede fallar por credenciales antiguas o
-      // desincronizadas. No la borramos al primer fallo: damos 4 intentos
-      // antes de considerarla irrecuperable.
-      const retryableSessionFailure =
-        statusCode === 401 ||
-        statusCode === 408 ||
-        statusCode === 428 ||
-        statusCode === 440;
+      // Los códigos 440 (conflicto) y 408/428 (transitorios) no significan
+      // que las credenciales estén corruptas. Nunca borrar la sesión por ellos.
+      if (statusCode === 440) {
+        sessionRecoveryFailures = 0;
+        console.warn('⚠️ Conflicto 440: se conservarán las credenciales. Comprueba que solo haya una instancia del bot conectada a este WhatsApp.');
+        scheduleReconnect(statusCode);
+        return;
+      }
 
-      if (retryableSessionFailure) {
-        sessionRecoveryFailures += 1;
-        console.log(
-          '🔐 Fallo de sesión restaurada #' +
-          sessionRecoveryFailures +
-          ' de 4.'
-        );
-
-        if (sessionRecoveryFailures >= 4) {
-          console.error('🧹 La sesión restaurada falló 4 veces. Se limpiará para permitir una nueva vinculación.');
-          clearTimeout(reconnectTimer);
-
-          try {
-            fs.rmSync(SESSION_DIR, { recursive: true, force: true });
-          } catch {}
-          fs.mkdirSync(SESSION_DIR, { recursive: true });
-
-          // No borrar el respaldo remoto aquí. Una falla temporal o una
-          // transición de WhatsApp no debe destruir la última sesión válida.
-          // /iniciar podrá reemplazarlo después de una nueva vinculación.
-          pairingNumber = null;
-          pairingCode = null;
-          pairingRequested = false;
-          pairingError = 'La sesión anterior ya no es válida. Genera un nuevo código de vinculación.';
-          connectionState = 'desconectado';
-          return;
-        }
+      if (statusCode === 408 || statusCode === 428 || statusCode === 515) {
+        sessionRecoveryFailures = 0;
+        console.warn('⚠️ Desconexión transitoria (' + statusCode + '); se conservará la sesión.');
+        scheduleReconnect(statusCode);
+        return;
       }
 
       scheduleReconnect(statusCode);
