@@ -2,8 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extraerUrl, detectarPlataforma, MAX_MEDIA_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
-const { inspectWebpAnimation } = require('../stickerUtils');
+const { extraerUrl, analizarSolicitudDescarga, detectarPlataforma, tipoMimetype, descargaDirecta, MAX_MEDIA_BYTES, TIMEOUT_MS, MAX_MEDIA_FILES } = require('../descargasSociales');
+const { inspectWebpAnimation, parseMediaSizeBytes } = require('../stickerUtils');
 const { validateSessionSnapshot } = require('../sessionUtils');
 
 function chunk(type, payload) {
@@ -38,6 +38,39 @@ test('reconoce enlaces de las plataformas admitidas', () => {
   }
 });
 
+test('no confunde URLs desnudas con comandos de plataforma', () => {
+  assert.deepEqual(analizarSolicitudDescarga('instagram.com/reel/ABC'), {
+    tipo: 'url', plataforma: 'auto', enlace: 'instagram.com/reel/ABC'
+  });
+  assert.deepEqual(analizarSolicitudDescarga('youtube.com/watch?v=abc'), {
+    tipo: 'url', plataforma: 'auto', enlace: 'youtube.com/watch?v=abc'
+  });
+  assert.deepEqual(analizarSolicitudDescarga('youtu.be/abc123'), {
+    tipo: 'url', plataforma: 'auto', enlace: 'youtu.be/abc123'
+  });
+  assert.deepEqual(analizarSolicitudDescarga('instagram https://www.instagram.com/reel/ABC'), {
+    tipo: 'platform', plataforma: 'instagram', enlace: 'https://www.instagram.com/reel/ABC'
+  });
+  assert.deepEqual(analizarSolicitudDescarga('twitter https://x.com/demo/status/1'), {
+    tipo: 'platform', plataforma: 'x', enlace: 'https://x.com/demo/status/1'
+  });
+  assert.deepEqual(analizarSolicitudDescarga('descargar https://cdn.example.org/video.mp4'), {
+    tipo: 'generic', plataforma: 'auto', enlace: 'https://cdn.example.org/video.mp4'
+  });
+  assert.deepEqual(analizarSolicitudDescarga('descargar'), {
+    tipo: 'generic', plataforma: 'auto', enlace: ''
+  });
+});
+
+test('asigna MIME de vídeo a los formatos soportados y documento a MPEG-TS', () => {
+  assert.equal(tipoMimetype('.mp4', 'video/mp4'), 'video');
+  assert.equal(tipoMimetype('.mkv', 'video/x-matroska'), 'video');
+  assert.equal(tipoMimetype('.avi', 'video/x-msvideo'), 'video');
+  assert.equal(tipoMimetype('.flv', 'video/x-flv'), 'video');
+  assert.equal(tipoMimetype('.mpeg', 'video/mpeg'), 'video');
+  assert.equal(tipoMimetype('.ts', 'video/mp2t'), 'document');
+});
+
 test('acepta enlaces públicos genéricos y dominios sin protocolo', () => {
   assert.equal(
     extraerUrl('https://cdn.example.org/files/video.mov?token=abc', 'auto'),
@@ -70,9 +103,97 @@ test('acepta enlaces de YouTube y detecta la plataforma correcta', () => {
 });
 
 test('mantiene el límite de 100 MB y el timeout ampliado para videos largos', () => {
-  assert.equal(MAX_MEDIA_BYTES, 100 * 1024 * 1024);
+  assert.equal(MAX_MEDIA_BYTES, 100_000_000);
   assert.equal(TIMEOUT_MS, 30 * 60 * 1000);
   assert.equal(MAX_MEDIA_FILES, 10);
+});
+
+test('descarga un enlace directo en streaming sin cargar toda la respuesta en un buffer de aplicación', async t => {
+  const dns = require('node:dns/promises');
+  const fs = require('node:fs/promises');
+  const os = require('node:os');
+  const path = require('node:path');
+  const payload = Buffer.from('example tiny video payload');
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bot-direct-download-test-'));
+
+  t.mock.method(dns, 'lookup', async () => [{ address: '93.184.216.34', family: 4 }]);
+  t.mock.method(globalThis, 'fetch', async () => new Response(payload, {
+    status: 200,
+    headers: { 'content-type': 'video/mp4', 'content-length': String(payload.length) }
+  }));
+
+  try {
+    const result = await descargaDirecta('https://cdn.example.org/video.mp4', tempDir, 1);
+    assert.equal(result.tipo, 'video');
+    assert.equal(result.mimetype, 'video/mp4');
+    assert.equal(result.size, payload.length);
+    assert.deepEqual(await fs.readFile(result.path), payload);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('corta redirecciones de descargas hacia IP privada antes de hacer otra petición', async t => {
+  const dns = require('node:dns/promises');
+  const fs = require('node:fs/promises');
+  const os = require('node:os');
+  const path = require('node:path');
+  let calls = 0;
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bot-redirect-test-'));
+
+  t.mock.method(dns, 'lookup', async () => [{ address: '93.184.216.34', family: 4 }]);
+  t.mock.method(globalThis, 'fetch', async () => {
+    calls += 1;
+    return new Response(null, {
+      status: 302,
+      headers: { location: 'http://127.0.0.1/internal.mp4' }
+    });
+  });
+
+  try {
+    await assert.rejects(
+      descargaDirecta('https://cdn.example.org/redirect', tempDir, 1),
+      /dirección no permitida/
+    );
+    assert.equal(calls, 1);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('rechaza archivos directos demasiado grandes según Content-Length', async t => {
+  const dns = require('node:dns/promises');
+  const fs = require('node:fs/promises');
+  const os = require('node:os');
+  const path = require('node:path');
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bot-oversize-test-'));
+
+  t.mock.method(dns, 'lookup', async () => [{ address: '93.184.216.34', family: 4 }]);
+  t.mock.method(globalThis, 'fetch', async () => new Response(Buffer.from('x'), {
+    status: 200,
+    headers: {
+      'content-type': 'video/mp4',
+      'content-length': String(MAX_MEDIA_BYTES + 1)
+    }
+  }));
+
+  try {
+    await assert.rejects(
+      descargaDirecta('https://cdn.example.org/large.mp4', tempDir, 1),
+      /supera el límite de descarga de 100 MB/
+    );
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('convierte tamaños de metadatos multimedia a bytes sin perder valores Long', () => {
+  assert.equal(parseMediaSizeBytes(123), 123);
+  assert.equal(parseMediaSizeBytes('456'), 456);
+  assert.equal(parseMediaSizeBytes({ toNumber: () => 789 }), 789);
+  assert.equal(parseMediaSizeBytes({ low: 10, high: 0 }), 10);
+  assert.equal(parseMediaSizeBytes(undefined), null);
+  assert.equal(parseMediaSizeBytes('not-a-number'), null);
 });
 
 test('rechaza dominios parecidos pero no auténticos', () => {
