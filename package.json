@@ -6,7 +6,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node --check descargasSociales.js && node --check stickerUtils.js",
+    "check": "node --check index.js && node --check descargasSociales.js && node --check stickerUtils.js && node --check sessionUtils.js",
     "test": "node --test"
   },
   "engines": {
