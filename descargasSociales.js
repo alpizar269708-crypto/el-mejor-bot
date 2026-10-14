@@ -189,7 +189,7 @@ function analizarSolicitudDescarga(texto) {
   const trimmed = String(texto || '').trim();
   if (!trimmed) return null;
 
-  const generic = trimmed.match(/^(?:descargar|descarga|download)(?:\\s+([\\s\\S]+))?$/i);
+  const generic = trimmed.match(/^(?:descargar|descarga|download)(?:\s+([\s\S]+))?$/i);
   if (generic) {
     return {
       tipo: 'generic',
@@ -198,9 +198,9 @@ function analizarSolicitudDescarga(texto) {
     };
   }
 
-  // Solo tratarlo como comando si la palabra está separada por espacio o fin
-  // de texto; así "instagram.com/video" y "youtube.com/watch" siguen siendo URLs.
-  const command = trimmed.match(/^(tiktok|instagram|x|twitter|youtube|pinterest|facebook|reddit|threads)(?=\\s|$)/i);
+  // Tratar la palabra como comando solo si después hay espacio o fin de texto.
+  // Así "instagram.com/reel/..." y "youtube.com/watch?..." siguen siendo URLs.
+  const command = trimmed.match(/^(tiktok|instagram|x|twitter|youtube|pinterest|facebook|reddit|threads)(?=\s|$)/i);
   if (command) {
     const rawPlatform = command[1].toLowerCase();
     return {
@@ -210,7 +210,7 @@ function analizarSolicitudDescarga(texto) {
     };
   }
 
-  const isBareUrl = /^(?:https?:\\/\\/)?(?:[a-z0-9.-]+)(?::\\d{1,5})?(?:[/?#][^\\s]*)?$/i.test(trimmed);
+  const isBareUrl = /^(?:https?:\/\/)?(?:[a-z0-9.-]+)(?::\d{1,5})?(?:[/?#][^\s]*)?$/i.test(trimmed);
   if (isBareUrl) {
     return { tipo: 'url', plataforma: 'auto', enlace: trimmed };
   }
