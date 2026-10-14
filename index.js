@@ -1360,6 +1360,8 @@ async function restartForFreshLogin() {
     clearTimeout(uploadTimer);
     socketGeneration += 1;
     await Promise.allSettled([...pendingCredentialWrites]);
+    if (sessionUploadDone) await sessionUploadDone;
+    await sessionIoTail.catch(() => {});
     restoredSessionSource = null;
     pairingError = null;
     pairingCode = null;
@@ -1812,18 +1814,47 @@ app.post('/iniciar', async (req, res) => {
   }
 });
 
-app.post('/cerrar-sesion', async (_req, res) => {
+async function logoutAndForgetSession() {
   shuttingDown = true;
   clearTimeout(reconnectTimer);
   clearTimeout(uploadTimer);
+  socketGeneration += 1;
+
+  // Dejar terminar las escrituras ya iniciadas; después invalidar la sesión en
+  // WhatsApp y eliminar ambos archivos cifrados para que un redeploy no restaure
+  // una sesión que el usuario pidió cerrar.
+  await Promise.allSettled([...pendingCredentialWrites]);
+  if (sessionUploadDone) await sessionUploadDone;
+  await sessionIoTail.catch(() => {});
+
+  const currentSocket = sock;
+  try {
+    if (currentSocket) await currentSocket.logout();
+  } catch (error) {
+    console.warn('⚠️ WhatsApp no confirmó el cierre remoto:', error?.message || error);
+  }
+
+  let remoteSessionClean = true;
+  if (sessionSecurityReady()) {
+    const [primaryDeleted, backupDeleted] = await Promise.all([
+      deleteEncryptedSession(),
+      deleteEncryptedSessionFile(LAST_GOOD_SESSION_FILE)
+    ]);
+    remoteSessionClean = primaryDeleted && backupDeleted;
+    if (!remoteSessionClean) {
+      console.error('❌ No se pudieron borrar todos los respaldos remotos; una sesión antigua podría seguir disponible en GitHub.');
+    }
+  }
 
   try {
-    if (sock) {
-      try { await sock.logout(); } catch {}
+    if (currentSocket) {
+      try { currentSocket.ev.removeAllListeners(); } catch {}
+      try { currentSocket.ws?.close(); } catch {}
     }
   } finally {
     sock = null;
     authState = null;
+    restoredSessionSource = null;
     qrDataUrl = null;
     pairingCode = null;
     pairingNumber = null;
@@ -1831,46 +1862,41 @@ app.post('/cerrar-sesion', async (_req, res) => {
     pairingError = null;
     lastQrAt = 0;
     connectionState = 'desconectado';
-    shuttingDown = false;
+    reconnectAttempts = 0;
+    sessionRecoveryFailures = 0;
 
     try {
       fs.rmSync(SESSION_DIR, { recursive: true, force: true });
     } catch {}
-
     fs.mkdirSync(SESSION_DIR, { recursive: true });
+    shuttingDown = false;
   }
 
+  return remoteSessionClean;
+}
+
+app.post('/cerrar-sesion', async (_req, res) => {
+  try {
+    await logoutAndForgetSession();
+  } catch (error) {
+    console.error('❌ Error cerrando sesión:', error.message);
+  }
   res.redirect('/');
 });
 
 app.get('/limpiar-whatsapp', async (_req, res) => {
-  shuttingDown = true;
-  clearTimeout(reconnectTimer);
-  clearTimeout(uploadTimer);
-
   try {
-    if (sock) {
-      try { await sock.logout(); } catch {}
-    }
-  } finally {
-    sock = null;
-    authState = null;
-    qrDataUrl = null;
-    pairingCode = null;
-    pairingNumber = null;
-    pairingRequested = false;
-    pairingError = null;
-    connectionState = 'desconectado';
-    shuttingDown = false;
-
-    try {
-      fs.rmSync(SESSION_DIR, { recursive: true, force: true });
-    } catch {}
-
-    fs.mkdirSync(SESSION_DIR, { recursive: true });
+    const remoteSessionClean = await logoutAndForgetSession();
+    res.status(remoteSessionClean ? 200 : 503).json({
+      ok: remoteSessionClean,
+      mensaje: remoteSessionClean
+        ? 'Sesión local y respaldos remotos limpiados.'
+        : 'Sesión local limpiada, pero falló el borrado de uno o más respaldos remotos.'
+    });
+  } catch (error) {
+    console.error('❌ Error limpiando WhatsApp:', error.message);
+    res.status(500).json({ ok: false, mensaje: 'No se pudo completar la limpieza.' });
   }
-
-  res.json({ ok: true, mensaje: 'Sesión limpiada.' });
 });
 
 process.on('unhandledRejection', error => {
