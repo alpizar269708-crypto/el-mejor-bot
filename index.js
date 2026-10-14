@@ -16,7 +16,7 @@ const {
 } = require('@whiskeysockets/baileys');
 
 const { Sticker, StickerTypes } = require('wa-sticker-formatter');
-const { inspectWebpAnimation } = require('./stickerUtils');
+const { inspectWebpAnimation, parseMediaSizeBytes } = require('./stickerUtils');
 const { validateSessionSnapshot } = require('./sessionUtils');
 
 const crypto = require('crypto');
@@ -1226,6 +1226,17 @@ async function createFastVideoSticker(buffer, duration) {
 
 async function createStickerWork(message, sourceMessage, mediaType) {
   const jid = message.key.remoteJid;
+  const sourceContent = unwrapMessage(sourceMessage);
+  const sourceMetadata = mediaType === 'video'
+    ? sourceContent?.videoMessage
+    : sourceContent?.imageMessage;
+  const declaredBytes = parseMediaSizeBytes(sourceMetadata?.fileLength);
+
+  // Rechazar videos/fotos enormes antes de bajarlos enteros a RAM para generar
+  // un sticker pequeño. Para archivos grandes se debe usar "descargar enlace".
+  if (declaredBytes !== null && declaredBytes > MAX_MEDIA_BYTES) {
+    throw new Error('El archivo original supera 100 MB; no cabe en memoria como sticker. Para archivos grandes usa el comando descargar con el enlace.');
+  }
 
   // En vez de reacciones, avisar directamente sobre el mensaje que se
   // convertirá en sticker para que quede claro qué está procesando.
@@ -1252,6 +1263,11 @@ async function createStickerWork(message, sourceMessage, mediaType) {
   );
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
     throw new Error('WhatsApp no entregó el archivo multimedia completo. Intenta reenviar la imagen o el video.');
+  }
+  if (buffer.length > MAX_MEDIA_BYTES) {
+    const sizeBytes = buffer.length;
+    buffer = null;
+    throw new Error('El archivo descargado pesa ' + (sizeBytes / 1_000_000).toFixed(1) + ' MB y supera el límite de 100 MB para crear un sticker. Para videos grandes usa descargar con el enlace.');
   }
 
   if (mediaType === 'video') {
