@@ -3,7 +3,7 @@ services:
     name: el-mejor-bot
     runtime: node
     plan: free
-    buildCommand: "YOUTUBE_DL_HOST=https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux npm install --no-audit --no-fund && python3 -m venv .venv-gallery-dl && .venv-gallery-dl/bin/python -m pip install --disable-pip-version-check --no-cache-dir gallery-dl==1.32.16"
+    buildCommand: "YOUTUBE_DL_HOST=https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux npm install --no-audit --no-fund --prefer-offline && if [ ! -x .venv-gallery-dl/bin/gallery-dl ]; then python3 -m venv .venv-gallery-dl; fi && .venv-gallery-dl/bin/python -m pip install --disable-pip-version-check gallery-dl==1.32.16"
     startCommand: npm start
     envVars:
       - key: PORT
@@ -14,5 +14,5 @@ services:
     runtime: node
     plan: starter
     schedule: "*/10 * * * *"
-    buildCommand: "YOUTUBE_DL_HOST=https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux npm install --no-audit --no-fund"
+    buildCommand: "echo 'Keepalive job has no Node dependencies to install'"
     startCommand: curl -fsS --max-time 25 --retry 2 --retry-delay 3 https://el-mejor-bot-tmw5.onrender.com/keepalive
