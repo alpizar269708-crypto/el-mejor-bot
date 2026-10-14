@@ -654,10 +654,8 @@ async function uploadEncryptedSession() {
         try {
           const encryptedExisting = Buffer.from(existingFile.content.replace(/\n/g, ''), 'base64').toString('utf8');
           const filesExisting = JSON.parse(decryptSession(encryptedExisting));
-          const credsExisting = filesExisting['creds.json']
-            ? JSON.parse(Buffer.from(filesExisting['creds.json'], 'base64').toString('utf8'))
-            : null;
-          existingSessionIsRegistered = credsExisting?.registered === true;
+          validateSessionSnapshot(filesExisting);
+          existingSessionIsRegistered = true;
         } catch (validationError) {
           console.warn('⚠️ No se usará session.enc como respaldo porque no se pudo validar:', validationError.message);
         }
