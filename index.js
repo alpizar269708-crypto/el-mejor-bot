@@ -26,7 +26,7 @@ const execFileAsync = promisify(execFile);
 
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
-const { comandoDescargaSocial, liberarColaDescargas, estadoColaDescargas } = require('./descargasSociales');
+const { comandoDescargaSocial, extraerUrl, detectarPlataforma, liberarColaDescargas, estadoColaDescargas } = require('./descargasSociales');
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN?.trim();
@@ -1138,17 +1138,38 @@ async function createStickerWork(message, sourceMessage, mediaType) {
     await sock.sendMessage(jid, { sticker: stickerBuffer }, { quoted: message });
     rememberActivity(jid, 'video');
   } else {
-    const sticker = new Sticker(buffer, {
-      pack: 'el mejor bot',
-      author: 'el mejor bot',
-      type: StickerTypes.DEFAULT,
-      quality: 90
-    });
+    // WhatsApp limita los stickers estáticos a 100 KB. Dejar margen evita
+    // rechazos al volver a empaquetar/reenviar el sticker.
+    const MAX_STATIC_STICKER_BYTES = 95 * 1024;
+    let stickerBuffer = null;
+    let lastSize = 0;
 
-    const stickerBuffer = await sticker.toBuffer();
+    for (const quality of [85, 75, 65, 55, 45, 35]) {
+      const sticker = new Sticker(buffer, {
+        pack: 'el mejor bot',
+        author: 'el mejor bot',
+        type: StickerTypes.DEFAULT,
+        quality
+      });
+      const candidate = await sticker.toBuffer();
+      const inspection = inspectWebpAnimation(candidate);
+
+      if (!inspection.valid || inspection.animated) {
+        throw new Error('La imagen no se convirtió en un WebP estático válido.');
+      }
+      lastSize = candidate.length;
+      if (candidate.length <= MAX_STATIC_STICKER_BYTES) {
+        stickerBuffer = candidate;
+        break;
+      }
+      console.warn('⚠️ Sticker estático supera el límite; bajando calidad (' + Math.ceil(candidate.length / 1024) + ' KB).');
+    }
+
+    if (!stickerBuffer) {
+      throw new Error('La imagen no cabe en el límite de 95 KB para stickers estáticos (último intento: ' + Math.ceil(lastSize / 1024) + ' KB).');
+    }
 
     buffer = null;
-
     await sock.sendMessage(jid, { sticker: stickerBuffer }, { quoted: message });
     rememberActivity(jid, 'image');
   }
@@ -1249,36 +1270,43 @@ async function handleMessage(update) {
     );
   }
 
-  const socialMatch = text.trim().match(/^(tiktok|instagram|x|twitter|pinterest|facebook|reddit|threads)\b/i);
+  const trimmedText = text.trim();
+  const genericDownload = trimmedText.match(/^(?:descargar|descarga|download)\s+([\s\S]+)$/i);
+  if (genericDownload) {
+    const url = extraerUrl(genericDownload[1], 'auto');
+    if (!url) {
+      return sendText(message.key.remoteJid, '⚠️ Usa: descargar https://enlace-publico-de-imagen-o-video', message);
+    }
+    return comandoDescargaSocial(
+      sock,
+      message.key.remoteJid,
+      message,
+      url,
+      detectarPlataforma(url) || 'auto'
+    );
+  }
+
+  const socialMatch = trimmedText.match(/^(tiktok|instagram|x|twitter|youtube|youtu\.be|pinterest|facebook|reddit|threads)\b/i);
   if (socialMatch) {
     const comando = socialMatch[1].toLowerCase();
-    const plataforma = comando === 'twitter' ? 'x' : comando;
-    const argumentos = text.trim().replace(/^(tiktok|instagram|x|twitter|pinterest|facebook|reddit|threads)\b/i, '').trim();
+    const plataforma = comando === 'twitter' ? 'x' : comando === 'youtu.be' ? 'youtube' : comando;
+    const argumentos = trimmedText.replace(/^(tiktok|instagram|x|twitter|youtube|youtu\.be|pinterest|facebook|reddit|threads)\b/i, '').trim();
     return comandoDescargaSocial(sock, message.key.remoteJid, message, argumentos, plataforma);
   }
 
-  // Descarga automática cuando el mensaje contiene únicamente un enlace social.
-  // Se limita a hosts conocidos para no interceptar enlaces normales del chat.
-  const enlaceSolo = text.trim();
-  if (/^(?:https?:\/\/)?(?:www\.)?[^\s/]+\/[^\s]*$/i.test(enlaceSolo)) {
-    let urlAutomatica;
-    try {
-      urlAutomatica = new URL(/^https?:\/\//i.test(enlaceSolo) ? enlaceSolo : 'https://' + enlaceSolo);
-    } catch (_) {}
-    const host = urlAutomatica?.hostname?.toLowerCase().replace(/^www\./, '') || '';
-    const plataformas = [
-      [/^(?:[^.]+\.)*tiktok\.com$/, 'tiktok'],
-      [/^(?:[^.]+\.)*instagram\.com$/, 'instagram'],
-      [/^(?:[^.]+\.)*(?:x\.com|twitter\.com|t\.co)$/, 'x'],
-      [/^(?:[^.]+\.)*pinterest\.[a-z.]+$/, 'pinterest'],
-      [/^pin\.it$/, 'pinterest'],
-      [/^(?:[^.]+\.)*(?:facebook\.com|fb\.watch|fb\.com)$/, 'facebook'],
-      [/^(?:[^.]+\.)*(?:reddit\.com|redd\.it)$/, 'reddit'],
-      [/^(?:[^.]+\.)*threads\.net$/, 'threads']
-    ];
-    const encontrada = plataformas.find(([patron]) => patron.test(host));
-    if (encontrada) {
-      return comandoDescargaSocial(sock, message.key.remoteJid, message, [urlAutomatica?.toString() || enlaceSolo], encontrada[1]);
+  // Descargar automáticamente enlaces públicos a contenido multimedia, aunque
+  // el host no tenga un extractor dedicado. Para texto normal se requiere una URL sola.
+  const isBareUrl = /^(?:https?:\/\/)?(?:[a-z0-9.-]+)(?::\d{1,5})?(?:\/[^\s]*)?$/i.test(trimmedText);
+  if (isBareUrl) {
+    const url = extraerUrl(trimmedText, 'auto');
+    if (url) {
+      return comandoDescargaSocial(
+        sock,
+        message.key.remoteJid,
+        message,
+        url,
+        detectarPlataforma(url) || 'auto'
+      );
     }
   }
 
@@ -1286,7 +1314,6 @@ async function handleMessage(update) {
 
   const direct = findMedia(message);
   if (direct) {
-    rememberActivity(message.key?.remoteJid, direct.type);
     return createSticker(message, message, direct.type);
   }
 
@@ -1294,7 +1321,6 @@ async function handleMessage(update) {
   if (quoted) {
     const quotedMedia = findMedia(quoted);
     if (quotedMedia) {
-      rememberActivity(message.key?.remoteJid, quotedMedia.type);
       return createSticker(message, quoted, quotedMedia.type);
     }
   }
