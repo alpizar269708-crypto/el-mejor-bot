@@ -49,4 +49,28 @@ function inspectWebpAnimation(input) {
   };
 }
 
-module.exports = { inspectWebpAnimation };
+
+function parseMediaSizeBytes(value) {
+  if (value == null) return null;
+
+  try {
+    if (typeof value === 'object' && typeof value.toNumber === 'function') {
+      value = value.toNumber();
+    } else if (
+      typeof value === 'object' &&
+      Number.isFinite(value.low) &&
+      Number.isFinite(value.high)
+    ) {
+      value = (value.high >>> 0) * 0x100000000 + (value.low >>> 0);
+    }
+
+    const numeric = typeof value === 'bigint'
+      ? Number(value)
+      : (typeof value === 'string' && value.trim() === '' ? NaN : Number(value));
+    return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
+  } catch {
+    return null;
+  }
+}
+
+module.exports = { inspectWebpAnimation, parseMediaSizeBytes };
