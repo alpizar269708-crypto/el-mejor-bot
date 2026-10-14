@@ -8,10 +8,14 @@ const MAX_VIDEO_BYTES = 64 * 1024 * 1024;
 const TIMEOUT_MS = 120000;
 
 function extraerUrl(texto, plataforma) {
-  const host = plataforma === 'tiktok'
-    ? /(?:www\.)?(?:tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)/i
-    : /(?:www\.)?instagram\.com/i;
-  const coincidencias = String(texto || '').match(/https?:\/\/[^\s<>]+|(?:www\.)?(?:tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com|instagram\.com)\/[^\s<>]+/gi) || [];
+  const hosts = {
+    tiktok: /(?:www\.)?(?:tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)/i,
+    instagram: /(?:www\.)?instagram\.com/i,
+    x: /(?:www\.)?(?:x\.com|twitter\.com|t\.co)/i
+  };
+  const host = hosts[plataforma];
+  if (!host) return null;
+  const coincidencias = String(texto || '').match(/https?:\/\/[^\s<>]+|(?:www\.)?(?:tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com|instagram\.com|x\.com|twitter\.com|t\.co)\/[^\s<>]+/gi) || [];
   for (let valor of coincidencias) {
     valor = valor.replace(/[),.;!?]+$/g, '');
     if (!/^https?:\/\//i.test(valor)) valor = 'https://' + valor;
@@ -20,6 +24,7 @@ function extraerUrl(texto, plataforma) {
       if (!host.test(url.hostname)) continue;
       if (plataforma === 'tiktok' && !/(^|\.)tiktok\.com$/i.test(url.hostname)) continue;
       if (plataforma === 'instagram' && !/(^|\.)instagram\.com$/i.test(url.hostname)) continue;
+      if (plataforma === 'x' && !/(^|\.)(?:x\.com|twitter\.com|t\.co)$/i.test(url.hostname)) continue;
       return url.toString();
     } catch (_) {}
   }
@@ -46,7 +51,11 @@ async function descargarVideo(url, plataforma) {
       restrictFilenames: true,
       maxFilesize: '64M',
       userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      referer: plataforma === 'instagram' ? 'https://www.instagram.com/' : 'https://www.tiktok.com/'
+      referer: plataforma === 'instagram'
+        ? 'https://www.instagram.com/'
+        : plataforma === 'x'
+          ? 'https://x.com/'
+          : 'https://www.tiktok.com/'
     };
     await youtubedl(url, opciones, { timeout: TIMEOUT_MS });
     const archivos = await fs.promises.readdir(tempDir);
@@ -71,7 +80,7 @@ async function descargarVideo(url, plataforma) {
 
 async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma) {
   const url = extraerUrl(texto, plataforma);
-  const nombre = plataforma === 'tiktok' ? 'TikTok' : 'Instagram';
+  const nombre = { tiktok: 'TikTok', instagram: 'Instagram', x: 'X' }[plataforma] || plataforma;
   if (!url) {
     await sock.sendMessage(chatId, {
       text: '⚠️ Envíame un enlace público válido de ' + nombre + '. Ejemplo: ' + plataforma + ' https://...'
