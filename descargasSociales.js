@@ -186,6 +186,17 @@ function limpiarDirectorio(ruta) {
   return fs.promises.rm(ruta, { recursive: true, force: true });
 }
 
+function extensionDesdeContentDisposition(header) {
+  const text = String(header || '');
+  const utf8Match = text.match(/filename\\*\\s*=\\s*UTF-8''([^;]+)/i);
+  const plainMatch = text.match(/filename\\s*=\\s*(?:\"([^\"]+)\"|([^;]+))/i);
+  let filename = utf8Match?.[1] || plainMatch?.[1] || plainMatch?.[2] || '';
+  filename = filename.trim();
+  try { filename = decodeURIComponent(filename); } catch {}
+  const extension = path.extname(filename.replace(/^[\"']|[\"']$/g, '').split(/[\\\\/]/).pop() || '').toLowerCase();
+  return DIRECT_MEDIA_EXTENSIONS.has(extension) ? extension : '';
+}
+
 function esImagenExtension(extension) {
   return /\.(?:jpe?g|png|webp|avif|gif|bmp)$/i.test(extension);
 }
@@ -253,7 +264,10 @@ async function descargaDirecta(urlInicial, tempDir, index = 1) {
     const extensionUrl = path.extname(url.pathname).toLowerCase();
     const allowedByExtension = DIRECT_MEDIA_EXTENSIONS.has(extensionUrl);
     const extensionByMime = IMAGE_MIME_EXT[contentType] || VIDEO_MIME_EXT[contentType];
-    if (!contentType.startsWith('image/') && !contentType.startsWith('video/') && !allowedByExtension) {
+    const extensionByDisposition = extensionDesdeContentDisposition(response.headers.get('content-disposition'));
+    const responseIsMedia = contentType.startsWith('image/') || contentType.startsWith('video/');
+    const responseIsBinary = ['', 'application/octet-stream', 'binary/octet-stream', 'application/binary'].includes(contentType);
+    if (!responseIsMedia && !(allowedByExtension && responseIsBinary) && !(extensionByDisposition && responseIsBinary)) {
       throw new Error('El enlace directo no respondió una imagen o video reconocible (tipo ' + (contentType || 'desconocido') + ').');
     }
     if (contentLength > MAX_MEDIA_BYTES) {
@@ -261,7 +275,7 @@ async function descargaDirecta(urlInicial, tempDir, index = 1) {
     }
     if (!response.body) throw new Error('El servidor no entregó contenido descargable.');
 
-    const extension = allowedByExtension ? extensionUrl : (extensionByMime || '');
+    const extension = allowedByExtension ? extensionUrl : (extensionByMime || extensionByDisposition);
     if (!extension) throw new Error('El servidor no indicó un formato de imagen o video compatible.');
 
     destino = path.join(tempDir, String(index).padStart(3, '0') + '-direct' + extension);
@@ -400,7 +414,7 @@ async function descargarArchivos(url, plataforma = 'auto') {
 
     // Los enlaces directos a archivos multimedia no necesitan un extractor;
     // transmitirlos a disco mantiene baja la RAM aunque sean videos grandes.
-    if (DIRECT_MEDIA_EXTENSIONS.has(path.extname(parsed.pathname).toLowerCase())) {
+    if (plataformaEfectiva === 'auto' || DIRECT_MEDIA_EXTENSIONS.has(path.extname(parsed.pathname).toLowerCase())) {
       try {
         const directFile = await descargaDirecta(parsed.toString(), tempDir, 1);
         completed = true;
@@ -569,6 +583,9 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma = 'aut
 }
 
 module.exports = {
+  MAX_MEDIA_BYTES,
+  TIMEOUT_MS,
+  MAX_MEDIA_FILES,
   comandoDescargaSocial,
   descargarArchivos,
   extraerUrl,
