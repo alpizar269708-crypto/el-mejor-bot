@@ -60,6 +60,9 @@ test('no confunde URLs desnudas con comandos de plataforma', () => {
   assert.deepEqual(analizarSolicitudDescarga('descargar'), {
     tipo: 'generic', plataforma: 'auto', enlace: ''
   });
+  assert.deepEqual(analizarSolicitudDescarga('Mira este video: https://cdn.example.org/video.mp4'), {
+    tipo: 'url', plataforma: 'auto', enlace: 'https://cdn.example.org/video.mp4'
+  });
 });
 
 test('asigna MIME de vídeo a los formatos soportados y documento a MPEG-TS', () => {
@@ -79,6 +82,8 @@ test('envía los medios que rebasan límites comunes como documento y no los com
   assert.equal(tipoEnvioWhatsApp({ tipo: 'video', size: 64_000_000 }), 'video');
   assert.equal(tipoEnvioWhatsApp({ tipo: 'video', size: MAX_INLINE_VIDEO_BYTES + 1 }), 'document');
   assert.equal(tipoEnvioWhatsApp({ tipo: 'other', size: 1 }), 'document');
+  assert.equal(tipoEnvioWhatsApp({ tipo: 'image', size: 1_000_000, nombre: 'photo.avif' }), 'document');
+  assert.equal(tipoEnvioWhatsApp({ tipo: 'image', size: 1_000_000, nombre: 'photo.gif' }), 'document');
 });
 
 test('acepta enlaces públicos genéricos y dominios sin protocolo', () => {
