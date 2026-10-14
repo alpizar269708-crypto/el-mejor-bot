@@ -596,49 +596,27 @@ async function uploadEncryptedSession() {
     return false;
   }
 
-  const credsPath = path.join(SESSION_DIR, 'creds.json');
-  if (!fs.existsSync(credsPath)) {
-    lastSessionUploadOk = false;
-    lastSessionUploadError = 'No existe creds.json';
-    console.warn('⚠️ Sesión NO guardada: todavía no existe creds.json.');
-    return false;
-  }
-
-  // NUNCA sobrescribir el respaldo de GitHub con una vinculación incompleta.
-  // Esto evita que un deploy/reinicio durante el login destruya la última sesión válida.
-  let creds;
-  try {
-    creds = JSON.parse(await fs.promises.readFile(credsPath, 'utf8'));
-  } catch {
-    lastSessionUploadOk = false;
-    lastSessionUploadError = 'creds.json inválido';
-    console.warn('⚠️ Sesión NO guardada: creds.json no pudo validarse.');
-    return false;
-  }
-
-  // Guardar únicamente snapshots confirmados como registrados. No confiar
-  // solo en connection.open porque puede ocurrir antes de persistir las creds.
-  if (creds?.registered !== true) {
-    lastSessionUploadOk = false;
-    lastSessionUploadError = 'La sesión todavía no está marcada como vinculada';
-    console.log('⏸️ Sesión no guardada: registered todavía no es true; se conserva el respaldo válido.');
-    // creds.update volverá a programar la subida cuando lleguen las credenciales finales.
-    return false;
-  }
-
   if (uploadRunning) {
     uploadAgain = true;
     return false;
   }
 
   uploadRunning = true;
+  let resolveUploadDone;
+  const uploadDone = new Promise(resolve => { resolveUploadDone = resolve; });
+  sessionUploadDone = uploadDone;
 
   try {
-    const files = await collectSession();
-    if (!files['creds.json']) {
-      throw new Error('La sesión está vacía o creds.json no pudo leerse');
-    }
-    validateSessionSnapshot(files);
+    const snapshotTask = sessionIoTail.then(async () => {
+      const snapshot = await collectSession();
+      if (!snapshot['creds.json']) {
+        throw new Error('La sesión está vacía o creds.json no pudo leerse');
+      }
+      validateSessionSnapshot(snapshot);
+      return snapshot;
+    });
+    sessionIoTail = snapshotTask.then(() => undefined, () => undefined);
+    const files = await snapshotTask;
 
     const encrypted = encryptSession(JSON.stringify(files));
     const content = Buffer.from(encrypted, 'utf8').toString('base64');
@@ -764,6 +742,8 @@ async function uploadEncryptedSession() {
     return false;
   } finally {
     uploadRunning = false;
+    resolveUploadDone();
+    if (sessionUploadDone === uploadDone) sessionUploadDone = null;
 
     if (uploadAgain) {
       uploadAgain = false;
@@ -887,6 +867,8 @@ let loginRefreshPromise = null;
 let startSocketPromise = null;
 let startupPromise = null;
 let startupReady = false;
+let sessionIoTail = Promise.resolve();
+let sessionUploadDone = null;
 const pendingCredentialWrites = new Set();
 let connectionState = 'desconectado';
 let reconnectTimer = null;
@@ -1453,13 +1435,12 @@ async function startSocketInternal(restoreSession = true) {
 
   sock = newSock;
 
-  // Baileys puede emitir varios creds.update seguidos. Encadenarlos evita que
-  // dos escrituras simultáneas de creds.json/key stores se pisen entre sí.
-  let credentialWriteTail = Promise.resolve();
+  // Baileys puede emitir varios creds.update seguidos. Todas las escrituras y
+  // los snapshots remotos comparten una misma cola de I/O para no mezclar archivos.
   newSock.ev.on('creds.update', async () => {
-    if (myGeneration !== socketGeneration || sock !== newSock) return;
+    if (shuttingDown || myGeneration !== socketGeneration || sock !== newSock) return;
 
-    const task = credentialWriteTail.then(async () => {
+    const task = sessionIoTail.then(async () => {
       if (myGeneration !== socketGeneration || sock !== newSock) return;
       await socketAuthState.saveCreds();
       if (myGeneration !== socketGeneration || sock !== newSock) return;
@@ -1469,7 +1450,7 @@ async function startSocketInternal(restoreSession = true) {
       }
     });
     pendingCredentialWrites.add(task);
-    credentialWriteTail = task.catch(error => {
+    sessionIoTail = task.catch(error => {
       console.error('❌ Error guardando credenciales locales:', error.message);
     });
 
