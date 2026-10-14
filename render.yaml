@@ -3,7 +3,7 @@ services:
     name: el-mejor-bot
     runtime: node
     plan: free
-    buildCommand: "YOUTUBE_DL_HOST=https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_linux npm install --no-audit --no-fund"
+    buildCommand: "YOUTUBE_DL_HOST=https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux npm install --no-audit --no-fund"
     startCommand: npm start
     envVars:
       - key: PORT
@@ -14,5 +14,5 @@ services:
     runtime: node
     plan: starter
     schedule: "*/10 * * * *"
-    buildCommand: "YOUTUBE_DL_HOST=https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_linux npm install --no-audit --no-fund"
+    buildCommand: "YOUTUBE_DL_HOST=https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux npm install --no-audit --no-fund"
     startCommand: curl -fsS https://el-mejor-bot.onrender.com/keepalive
