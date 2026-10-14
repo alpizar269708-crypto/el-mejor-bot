@@ -1116,17 +1116,42 @@ async function handleMessage(update) {
   if (/^(menu|ayuda|help)$/i.test(text)) {
     return sendText(
       message.key.remoteJid,
-      '🤖 *el mejor bot*\n\n📸 Imagen + *sticker*\n🎥 Video + *sticker*\n⬇️ *tiktok enlace*, *instagram enlace* o *x enlace* para descargar videos públicos.\n🧹 *liberarcache* para limpiar colas pendientes y revisar procesos.\n↩️ También puedes responder una imagen o video con *sticker*.',
+      '🤖 *el mejor bot*\n\n📸 Imagen + *sticker*\n🎥 Video + *sticker*\n⬇️ Envía un enlace público de TikTok, Instagram, X, Pinterest, Facebook, Reddit o Threads, con o sin comando, para descargar fotos/videos disponibles.\n🧹 *liberarcache* para limpiar colas pendientes y revisar procesos.\n↩️ También puedes responder una imagen o video con *sticker*.',
       message
     );
   }
 
-  const socialMatch = text.trim().match(/^(tiktok|instagram|x|twitter)\b/i);
+  const socialMatch = text.trim().match(/^(tiktok|instagram|x|twitter|pinterest|facebook|reddit|threads)\b/i);
   if (socialMatch) {
     const comando = socialMatch[1].toLowerCase();
     const plataforma = comando === 'twitter' ? 'x' : comando;
-    const argumentos = text.trim().replace(/^(tiktok|instagram|x|twitter)\b/i, '').trim();
+    const argumentos = text.trim().replace(/^(tiktok|instagram|x|twitter|pinterest|facebook|reddit|threads)\b/i, '').trim();
     return comandoDescargaSocial(sock, message.key.remoteJid, message, argumentos, plataforma);
+  }
+
+  // Descarga automática cuando el mensaje contiene únicamente un enlace social.
+  // Se limita a hosts conocidos para no interceptar enlaces normales del chat.
+  const enlaceSolo = text.trim();
+  if (/^(?:https?:\/\/)?(?:www\.)?[^\s/]+\/[^\s]*$/i.test(enlaceSolo)) {
+    let urlAutomatica;
+    try {
+      urlAutomatica = new URL(/^https?:\/\//i.test(enlaceSolo) ? enlaceSolo : 'https://' + enlaceSolo);
+    } catch (_) {}
+    const host = urlAutomatica?.hostname?.toLowerCase().replace(/^www\./, '') || '';
+    const plataformas = [
+      [/^(?:[^.]+\.)*tiktok\.com$/, 'tiktok'],
+      [/^(?:[^.]+\.)*instagram\.com$/, 'instagram'],
+      [/^(?:[^.]+\.)*(?:x\.com|twitter\.com|t\.co)$/, 'x'],
+      [/^(?:[^.]+\.)*pinterest\.[a-z.]+$/, 'pinterest'],
+      [/^pin\.it$/, 'pinterest'],
+      [/^(?:[^.]+\.)*(?:facebook\.com|fb\.watch|fb\.com)$/, 'facebook'],
+      [/^(?:[^.]+\.)*(?:reddit\.com|redd\.it)$/, 'reddit'],
+      [/^(?:[^.]+\.)*threads\.net$/, 'threads']
+    ];
+    const encontrada = plataformas.find(([patron]) => patron.test(host));
+    if (encontrada) {
+      return comandoDescargaSocial(sock, message.key.remoteJid, message, [urlAutomatica?.toString() || enlaceSolo], encontrada[1]);
+    }
   }
 
   if (!isStickerCommand(text)) return;
