@@ -1485,8 +1485,8 @@ async function createStickerWork(message, sourceMessage, mediaType) {
       const sticker = new Sticker(buffer, {
         pack: 'el mejor bot',
         author: 'el mejor bot',
-        // Normalizar la imagen a un lienzo completo de 512×512 sin deformarla.
-        type: StickerTypes.FULL,
+        // Usar el tamaño estándar de WhatsApp; FULL agrega ajuste/espacio que puede hacer que el contenido se vea más pequeño.
+        type: StickerTypes.DEFAULT,
         quality
       });
       const candidate = await sticker.toBuffer();
