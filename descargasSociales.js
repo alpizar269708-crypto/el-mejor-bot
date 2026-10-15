@@ -68,7 +68,7 @@ const VIDEO_MIME_EXT = {
 };
 const DIRECT_MEDIA_EXTENSIONS = new Set([
   '.mp4', '.m4v', '.mov', '.webm', '.mkv', '.avi', '.3gp',
-  '.mpeg', '.mpg', '.flv', '.ts'
+  '.mpeg', '.mpg', '.flv', '.ts', '.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif', '.bmp'
 ]);
 const YTDLP_MEDIA_EXTENSIONS = /\.(?:mp4|m4v|mov|webm|mkv|avi|3gp|mpeg|mpg|flv|ts)$/i;
 
@@ -405,12 +405,14 @@ async function descargaDirecta(urlInicial, tempDir, index = 1, extraHeaders = {}
     const contentLength = Number(response.headers.get('content-length') || 0);
     const extensionUrl = path.extname(url.pathname).toLowerCase();
     const allowedByExtension = DIRECT_MEDIA_EXTENSIONS.has(extensionUrl);
-    const extensionByMime = VIDEO_MIME_EXT[contentType];
+    const extensionByMime = VIDEO_MIME_EXT[contentType] || IMAGE_MIME_EXT[contentType];
     const extensionByDisposition = extensionDesdeContentDisposition(response.headers.get('content-disposition'));
     const responseIsVideo = contentType.startsWith('video/');
+    const responseIsImage = contentType.startsWith('image/');
+    const responseIsMedia = responseIsVideo || responseIsImage;
     const responseIsBinary = ['', 'application/octet-stream', 'binary/octet-stream', 'application/binary'].includes(contentType);
-    if (!responseIsVideo && !(allowedByExtension && responseIsBinary) && !(extensionByDisposition && responseIsBinary)) {
-      throw new Error('Este bot solo descarga videos; el enlace no respondió un video reconocible (tipo ' + (contentType || 'desconocido') + ').');
+    if (!responseIsMedia && !(allowedByExtension && responseIsBinary) && !(extensionByDisposition && responseIsBinary)) {
+      throw new Error('El enlace no respondió una imagen o video reconocible (tipo ' + (contentType || 'desconocido') + ').');
     }
     if (contentLength > MAX_MEDIA_BYTES) {
       throw new Error('El archivo supera el límite de descarga de 100 MB.');
