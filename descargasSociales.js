@@ -1399,7 +1399,9 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma = 'aut
 
   try {
     await encolarDescarga(async () => {
+      const esInstagram = plataforma === 'instagram' || detectarPlataforma(url) === 'instagram';
       const progress = async (stage, detail) => {
+        if (!esInstagram) return;
         const message = 'Instagram · ' + stage + '\n' + detail;
         console.log('[Descarga Instagram] ' + stage + ': ' + detail);
         await sock.sendMessage(chatId, { text: message }, { quoted: msg });
