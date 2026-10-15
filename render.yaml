@@ -3,7 +3,7 @@ services:
     name: el-mejor-bot
     runtime: node
     plan: free
-    buildCommand: "YOUTUBE_DL_HOST=https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux npm install --no-audit --no-fund --prefer-offline && python3 -m venv .venv-gallery-dl && .venv-gallery-dl/bin/python -m pip install --disable-pip-version-check gallery-dl==1.32.16"
+    buildCommand: "npm install --no-audit --no-fund --prefer-offline && python3 -m venv .venv && .venv/bin/python -m pip install --disable-pip-version-check -U \"yt-dlp[default,curl-ffi]\" && npx puppeteer browsers install chrome"
     startCommand: npm start
     healthCheckPath: /health
     envVars:
