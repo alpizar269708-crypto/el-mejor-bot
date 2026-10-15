@@ -1262,10 +1262,13 @@ async function descargarArchivos(url, plataforma = 'auto', onProgress = null) {
       await reportarProgreso(onProgress, 'Fallback de fotos', 'yt-dlp no produjo archivos; activando los métodos específicos para imágenes de Instagram.');
       await limpiarDirectorio(tempDir);
       await fs.promises.mkdir(tempDir, { recursive: true });
+      let detalleImagenesInstagram = '';
       try {
         archivos = await descargarImagenesInstagram(parsed.toString(), tempDir, onProgress);
       } catch (imageError) {
-        console.warn('⚠️ Fallback de imágenes de Instagram:', String(imageError?.message || imageError).slice(0, 350));
+        detalleImagenesInstagram = String(imageError?.stderr || imageError?.message || imageError)
+          .replace(/\\s+/g, ' ').trim().slice(0, 500);
+        console.warn('⚠️ Fallback de imágenes de Instagram:', detalleImagenesInstagram);
       }
 
       // Conserva el fallback de miniatura como segunda alternativa para URLs
@@ -1292,9 +1295,10 @@ async function descargarArchivos(url, plataforma = 'auto', onProgress = null) {
       if (!archivos.length) {
         await reportarProgreso(onProgress, 'Resultado', 'Ningún método devolvió imágenes; revisa el detalle de error que aparecerá a continuación.');
         throw new Error(
-          'No se pudieron obtener las fotos de esta publicación desde el acceso público de Instagram. '+
+          'No se pudieron obtener las fotos de esta publicación desde el acceso público de Instagram. ' +
           'Verifica que el post sea público e inténtalo más tarde; Instagram puede limitar temporalmente ' +
-          'las consultas anónimas desde servidores.'
+          'las consultas anónimas desde servidores.' +
+          (detalleImagenesInstagram ? ' Diagnóstico del último método: ' + detalleImagenesInstagram : '')
         );
       }
     }
