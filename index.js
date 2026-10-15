@@ -1485,7 +1485,8 @@ async function createStickerWork(message, sourceMessage, mediaType) {
       const sticker = new Sticker(buffer, {
         pack: 'el mejor bot',
         author: 'el mejor bot',
-        type: StickerTypes.DEFAULT,
+        // Normalizar la imagen a un lienzo completo de 512×512 sin deformarla.
+        type: StickerTypes.FULL,
         quality
       });
       const candidate = await sticker.toBuffer();
