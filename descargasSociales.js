@@ -273,7 +273,7 @@ function analizarSolicitudDescarga(texto) {
   const genericMatch = normalized.match(/^(\S+)(?:\s+([\s\S]+))?$/);
   const genericWord = genericMatch?.[1] || '';
   const genericAliases = ['descargar', 'descarga', 'download'];
-  const genericCommand = genericAliases.find(word => genericWord === word || distanciaComando(genericWord, word) <= (word.length >= 8 ? 2 : 1));
+  const genericCommand = genericAliases.find(word => genericWord === word || distanciaComando(genericWord, word) <= (word.length >= 4 ? 2 : 0));
   if (genericCommand && (genericMatch?.[2] !== undefined || trimmed.split(/\s+/).length === 1)) {
     return {
       tipo: 'generic',
