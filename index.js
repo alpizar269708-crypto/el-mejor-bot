@@ -1569,6 +1569,11 @@ async function createSticker(message, sourceMessage, mediaType) {
 async function handleMessage(update) {
   const message = update?.messages?.[0];
   if (!message || message.key?.fromMe) return;
+  console.log('⚙️ Procesando mensaje entrante:', JSON.stringify({
+    type: update?.type || null,
+    hasText: Boolean(getText(message)),
+    messageType: Object.keys(message?.message || {})[0] || null
+  }));
   if (update?.type && update.type !== 'notify') return;
   const messageId = message.key?.id;
   const processedId = messageId
@@ -1817,11 +1822,22 @@ async function startSocketInternal(restoreSession = true) {
   });
 
   newSock.ev.on('messages.upsert', async update => {
+    // Diagnóstico temporal: confirmar si Baileys entrega mensajes entrantes a Render.
+    console.log('📩 messages.upsert:', JSON.stringify({
+      type: update?.type || null,
+      count: Array.isArray(update?.messages) ? update.messages.length : 0,
+      generationCurrent: myGeneration === socketGeneration && sock === newSock
+    }));
     if (myGeneration !== socketGeneration || sock !== newSock) return;
     // 'append' suele ser historial o mensajes añadidos posteriormente; procesar
     // solo notificaciones nuevas evita ejecutar dos veces comandos/descargas.
     if (update?.type && update.type !== 'notify') return;
     for (const message of update?.messages || []) {
+      console.log('📨 Mensaje recibido:', JSON.stringify({
+        fromMe: Boolean(message?.key?.fromMe),
+        hasText: Boolean(getText(message)),
+        messageType: Object.keys(message?.message || {})[0] || null
+      }));
       try {
         // No bloquear la recepción de mensajes mientras FFmpeg/Sticker Formatter
         // procesa un sticker. Así el bot puede seguir contestando y recibiendo
