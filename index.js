@@ -1148,9 +1148,32 @@ function getQuotedMessage(message) {
   } : null;
 }
 
+function normalizarComando(text) {
+  return String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+
+function distanciaEdicion(a, b) {
+  if (Math.abs(a.length - b.length) > 2) return 3;
+  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(current[j - 1] + 1, previous[j] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    previous = current;
+  }
+  return previous[b.length];
+}
+
+function coincideComando(text, esperado) {
+  const recibido = normalizarComando(text);
+  if (recibido === esperado) return true;
+  const limite = esperado.length >= 8 ? 2 : 1;
+  return distanciaEdicion(recibido, esperado) <= limite;
+}
+
 function isStickerCommand(text) {
-  // Comando intencionalmente exacto: solo la letra mayúscula S.
-  return text.trim() === 'S';
+  return ['sticker', 'stikers', 'stickers', 'stiker', 's', 'st'].some(cmd => coincideComando(text, cmd));
 }
 
 async function sendText(jid, text, quoted) {
@@ -1648,8 +1671,8 @@ async function handleMessage(update) {
   // explícitos como "menu" enviados desde ese número dentro de un grupo.
   const text = getText(message);
   const explicitCommand =
-    /^(menu|liberarcache)$/.test(text.trim()) || text.trim() === 'S' ||
-    Boolean(analizarSolicitudDescarga(text));
+    coincideComando(text, 'menu') || coincideComando(text, 'liberarcache') ||
+    isStickerCommand(text) || Boolean(analizarSolicitudDescarga(text));
   if (message.key?.fromMe && !explicitCommand) return;
 
   const messageId = message.key?.id;
@@ -1678,7 +1701,7 @@ async function handleMessage(update) {
   rememberActivity(message.key?.remoteJid, null);
   lastMessageProcessedAt = new Date().toISOString();
 
-  if (text.trim() === 'liberarcache') {
+  if (coincideComando(text, 'liberarcache')) {
     const descargas = liberarColaDescargas();
     const stickersCancelados = stickerQueue.splice(0);
     for (const job of stickersCancelados) {
@@ -1721,7 +1744,7 @@ async function handleMessage(update) {
     );
   }
 
-  if (text === 'menu') {
+  if (coincideComando(text, 'menu')) {
     return sendText(
       message.key.remoteJid,
       '🤖 *el mejor bot*\n\n📸 Imagen + *sticker*\n🎥 Video + *sticker*\n⬇️ Descarga videos de TikTok, Instagram, YouTube, X, Pinterest, Facebook, Reddit, Threads u otros sitios compatibles. También acepta enlaces directos de imagen o video; usa *descargar enlace* para sitios genéricos.\n🧹 *liberarcache* para limpiar colas pendientes y revisar procesos.\n↩️ También puedes responder una imagen o video con *sticker*.',
