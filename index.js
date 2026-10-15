@@ -1149,7 +1149,8 @@ function getQuotedMessage(message) {
 }
 
 function isStickerCommand(text) {
-  return /^(sticker|s|st)$/i.test(text.trim());
+  // Comando intencionalmente exacto: solo la letra mayúscula S.
+  return text.trim() === 'S';
 }
 
 async function sendText(jid, text, quoted) {
@@ -1647,7 +1648,7 @@ async function handleMessage(update) {
   // explícitos como "menu" enviados desde ese número dentro de un grupo.
   const text = getText(message);
   const explicitCommand =
-    /^(menu|ayuda|help|liberarcache|sticker|s|st)$/i.test(text.trim()) ||
+    /^(menu|liberarcache)$/.test(text.trim()) || text.trim() === 'S' ||
     Boolean(analizarSolicitudDescarga(text));
   if (message.key?.fromMe && !explicitCommand) return;
 
@@ -1677,7 +1678,7 @@ async function handleMessage(update) {
   rememberActivity(message.key?.remoteJid, null);
   lastMessageProcessedAt = new Date().toISOString();
 
-  if (/^liberarcache$/i.test(text.trim())) {
+  if (text.trim() === 'liberarcache') {
     const descargas = liberarColaDescargas();
     const stickersCancelados = stickerQueue.splice(0);
     for (const job of stickersCancelados) {
@@ -1720,7 +1721,7 @@ async function handleMessage(update) {
     );
   }
 
-  if (/^(menu|ayuda|help)$/i.test(text)) {
+  if (text === 'menu') {
     return sendText(
       message.key.remoteJid,
       '🤖 *el mejor bot*\n\n📸 Imagen + *sticker*\n🎥 Video + *sticker*\n⬇️ Descarga videos de TikTok, Instagram, YouTube, X, Pinterest, Facebook, Reddit, Threads u otros sitios compatibles. También acepta enlaces directos de imagen o video; usa *descargar enlace* para sitios genéricos.\n🧹 *liberarcache* para limpiar colas pendientes y revisar procesos.\n↩️ También puedes responder una imagen o video con *sticker*.',
