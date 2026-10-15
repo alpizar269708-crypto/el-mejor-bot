@@ -1025,51 +1025,65 @@ async function descargarImagenesInstagramConGalleryDl(urlInicial, tempDir) {
   }
 }
 
-async function descargarImagenesInstagram(urlInicial, tempDir) {
+async function descargarImagenesInstagram(urlInicial, tempDir, onProgress = null) {
   let pageUrl = normalizarUrl(urlInicial);
   if (!pageUrl || detectarPlataforma(pageUrl) !== 'instagram') {
     throw new Error('El fallback de imágenes solo acepta enlaces de Instagram.');
   }
 
-  // Primero consultar el endpoint público GraphQL de Instagram, sin inicio de sesión
-  // ni cookies de un usuario. Esto evita depender del HTML que redirige a login.
+  // Primera vía: endpoint público GraphQL de Instagram.
+  await reportarProgreso(onProgress, 'Instagram GraphQL', 'Consultando los datos públicos de la publicación.');
   try {
     const publicFiles = await descargarImagenesInstagramGraphqlPublico(pageUrl.toString(), tempDir);
+    await reportarProgreso(onProgress, 'Instagram GraphQL', 'El método encontró ' + publicFiles.length + ' archivo(s).');
     if (publicFiles.length) return publicFiles;
   } catch (error) {
-    console.warn('⚠️ La consulta anónima de Instagram no resolvió las fotos:', String(error?.message || error).slice(0, 220));
+    const detail = String(error?.message || error).slice(0, 220);
+    console.warn('⚠️ La consulta anónima de Instagram no resolvió las fotos:', detail);
+    await reportarProgreso(onProgress, 'Instagram GraphQL', 'Falló: ' + detail);
   }
 
-  // El endpoint público de inserción suele exponer la miniatura/fotos aun cuando la
-  // página normal del post redirige al login. No usa cookies de una cuenta.
+  // Segunda vía: endpoint público de inserción (embed).
+  await reportarProgreso(onProgress, 'Instagram embed', 'Consultando la versión pública insertada de la publicación.');
   try {
     const embedFiles = await descargarImagenesInstagramEmbedPublico(pageUrl.toString(), tempDir);
+    await reportarProgreso(onProgress, 'Instagram embed', 'El método encontró ' + embedFiles.length + ' archivo(s).');
     if (embedFiles.length) return embedFiles;
   } catch (error) {
-    console.warn('⚠️ No se pudo usar el embed público de Instagram:', String(error?.message || error).slice(0, 220));
+    const detail = String(error?.message || error).slice(0, 220);
+    console.warn('⚠️ No se pudo usar el embed público de Instagram:', detail);
+    await reportarProgreso(onProgress, 'Instagram embed', 'Falló: ' + detail);
   }
 
-  // Último respaldo externo con un extractor independiente: puede funcionar
-  // cuando Instagram bloquea las peticiones anónimas que salen de este servidor.
+  // Tercera vía: extractor público externo.
+  await reportarProgreso(onProgress, 'Extractor externo', 'Consultando el servicio externo de descarga de Instagram.');
   try {
     const externalFiles = await descargarImagenesInstagramApiPublica(pageUrl.toString(), tempDir);
+    await reportarProgreso(onProgress, 'Extractor externo', 'El método encontró ' + externalFiles.length + ' archivo(s).');
     if (externalFiles.length) return externalFiles;
   } catch (error) {
-    console.warn('⚠️ No se pudo usar el extractor externo de Instagram:', String(error?.message || error).slice(0, 220));
+    const detail = String(error?.message || error).slice(0, 220);
+    console.warn('⚠️ No se pudo usar el extractor externo de Instagram:', detail);
+    await reportarProgreso(onProgress, 'Extractor externo', 'Falló: ' + detail);
   }
 
-  // gallery-dl queda como alternativa adicional; algunas solicitudes públicas siguen funcionando.
+  // Cuarta vía: gallery-dl.
+  await reportarProgreso(onProgress, 'gallery-dl', 'Intentando recuperar las fotos con gallery-dl.');
   try {
     const galleryFiles = await descargarImagenesInstagramConGalleryDl(pageUrl.toString(), tempDir);
+    await reportarProgreso(onProgress, 'gallery-dl', 'El método encontró ' + galleryFiles.length + ' archivo(s).');
     if (galleryFiles.length) return galleryFiles;
   } catch (error) {
-    console.warn('⚠️ No se pudo usar gallery-dl para Instagram:', String(error?.message || error).slice(0, 250));
+    const detail = String(error?.message || error).slice(0, 250);
+    console.warn('⚠️ No se pudo usar gallery-dl para Instagram:', detail);
+    await reportarProgreso(onProgress, 'gallery-dl', 'Falló: ' + detail);
   }
 
   // Limpiar cualquier descarga parcial del extractor antes del fallback HTTP.
   await limpiarDirectorio(tempDir);
   await fs.promises.mkdir(tempDir, { recursive: true });
 
+  await reportarProgreso(onProgress, 'Página pública', 'Último intento: leyendo el HTML de la publicación y buscando URLs de imágenes.');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 25000);
   let response = null;
@@ -1154,7 +1168,7 @@ async function descargarImagenesInstagram(urlInicial, tempDir) {
   }
 }
 
-async function descargarArchivos(url, plataforma = 'auto') {
+async function descargarArchivos(url, plataforma = 'auto', onProgress = null) {
   const plataformaEfectiva = plataforma === 'auto' ? (detectarPlataforma(url) || 'auto') : plataforma;
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'social-download-'));
   const output = path.join(tempDir, '%(autonumber)03d.%(ext)s');
@@ -1195,7 +1209,9 @@ async function descargarArchivos(url, plataforma = 'auto') {
   try {
     const parsed = normalizarUrl(url);
     if (!parsed) throw new Error('El enlace debe ser una URL HTTP/HTTPS pública válida.');
+    await reportarProgreso(onProgress, 'Validación', 'Enlace recibido; validando que el destino sea público y seguro.');
     await validarHostPublico(parsed);
+    await reportarProgreso(onProgress, 'Validación', 'Enlace válido. Plataforma detectada: ' + plataformaEfectiva + '.');
 
     // Los enlaces directos a archivos multimedia no necesitan un extractor;
     // transmitirlos a disco mantiene baja la RAM aunque sean videos grandes.
@@ -1215,6 +1231,7 @@ async function descargarArchivos(url, plataforma = 'auto') {
     }
 
     let errorVideo = null;
+    await reportarProgreso(onProgress, 'yt-dlp 1/2', 'Intentando extraer medios con la selección de mejor calidad.');
     try {
       await youtubedl(parsed.toString(), opcionesVideo, { timeout: TIMEOUT_MS });
     } catch (error) {
@@ -1224,29 +1241,29 @@ async function descargarArchivos(url, plataforma = 'auto') {
     }
 
     let archivos = await listarArchivosMedia(tempDir);
+    await reportarProgreso(onProgress, 'yt-dlp 1/2', 'Archivos encontrados después del primer intento: ' + archivos.length + '.');
 
     // Un extractor puede identificar el post pero no ofrecer la selección de
     // video deseada (o devolver un carrusel de imágenes); reintentar sin format.
     if (!archivos.length) {
+      await reportarProgreso(onProgress, 'yt-dlp 2/2', 'El primer intento no dejó archivos; probando sin filtro de formato.');
       try {
         await youtubedl(parsed.toString(), opcionesBase, { timeout: TIMEOUT_MS });
       } catch (errorBase) {
         errorVideo = errorBase || errorVideo;
       }
       archivos = await listarArchivosMedia(tempDir);
+      await reportarProgreso(onProgress, 'yt-dlp 2/2', 'Archivos encontrados después del segundo intento: ' + archivos.length + '.');
     }
 
     // yt-dlp prioriza video/audio; para posts solo de fotos extraer URLs de
     // imágenes de la página pública de Instagram antes de probar miniaturas.
-    if (
-      !archivos.length &&
-      plataformaEfectiva === 'instagram' &&
-      esErrorSinVideoInstagram(errorVideo)
-    ) {
+    if (!archivos.length && plataformaEfectiva === 'instagram') {
+      await reportarProgreso(onProgress, 'Fallback de fotos', 'yt-dlp no produjo archivos; activando los métodos específicos para imágenes de Instagram.');
       await limpiarDirectorio(tempDir);
       await fs.promises.mkdir(tempDir, { recursive: true });
       try {
-        archivos = await descargarImagenesInstagram(parsed.toString(), tempDir);
+        archivos = await descargarImagenesInstagram(parsed.toString(), tempDir, onProgress);
       } catch (imageError) {
         console.warn('⚠️ Fallback de imágenes de Instagram:', String(imageError?.message || imageError).slice(0, 350));
       }
@@ -1256,6 +1273,7 @@ async function descargarArchivos(url, plataforma = 'auto') {
       if (!archivos.length) {
         await limpiarDirectorio(tempDir);
         await fs.promises.mkdir(tempDir, { recursive: true });
+        await reportarProgreso(onProgress, 'Miniatura', 'Los métodos de fotos no devolvieron archivos; intentando recuperar la miniatura como último recurso.');
         try {
           await youtubedl(parsed.toString(), {
             ...opcionesBase,
@@ -1272,8 +1290,9 @@ async function descargarArchivos(url, plataforma = 'auto') {
       }
 
       if (!archivos.length) {
+        await reportarProgreso(onProgress, 'Resultado', 'Ningún método devolvió imágenes; revisa el detalle de error que aparecerá a continuación.');
         throw new Error(
-          'No se pudieron obtener las fotos de esta publicación desde el acceso público de Instagram. ' +
+          'No se pudieron obtener las fotos de esta publicación desde el acceso público de Instagram. '+
           'Verifica que el post sea público e inténtalo más tarde; Instagram puede limitar temporalmente ' +
           'las consultas anónimas desde servidores.'
         );
@@ -1380,7 +1399,13 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma = 'aut
 
   try {
     await encolarDescarga(async () => {
-      const result = await descargarArchivos(url, plataforma);
+      const progress = async (stage, detail) => {
+        const message = 'Instagram · ' + stage + '\n' + detail;
+        console.log('[Descarga Instagram] ' + stage + ': ' + detail);
+        await sock.sendMessage(chatId, { text: message }, { quoted: msg });
+      };
+      const result = await descargarArchivos(url, plataforma, (event) => progress(event.etapa, event.detalle));
+      await progress('Descarga completada', 'Se obtuvieron ' + result.archivos.length + ' archivo(s). Ahora intentaré enviarlos por WhatsApp.');
       try {
         for (let i = 0; i < result.archivos.length; i++) {
           const archivo = result.archivos[i];
@@ -1416,6 +1441,15 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma = 'aut
           : 'Prueba con el enlace original de “Compartir → Copiar enlace” o con un enlace directo al archivo.') +
         '\n\nDetalle: ' + error.message.slice(0, 500)
     }, { quoted: msg });
+  }
+}
+
+async function reportarProgreso(onProgress, etapa, detalle) {
+  if (typeof onProgress !== 'function') return;
+  try {
+    await onProgress({ etapa, detalle });
+  } catch (error) {
+    console.warn('No se pudo enviar el aviso de progreso:', String(error?.message || error).slice(0, 160));
   }
 }
 
