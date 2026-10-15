@@ -438,7 +438,7 @@ async function descargaDirecta(urlInicial, tempDir, index = 1, extraHeaders = {}
     const stat = await fs.promises.stat(destino);
     if (!stat.size || stat.size > MAX_MEDIA_BYTES) throw new Error('El archivo vacío o supera los 100 MB.');
 
-    const responseMime = /^video\//.test(contentType) ? contentType : null;
+    const responseMime = /^(?:video|image)\//.test(contentType) ? contentType : null;
     const mime = responseMime || mimetypeDesdeExtension(extension);
     return {
       path: destino,
