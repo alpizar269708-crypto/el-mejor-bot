@@ -1521,7 +1521,7 @@ async function createStickerWork(message, sourceMessage, mediaType, signal) {
     let stickerBuffer = null;
     let lastSize = 0;
 
-    for (const quality of [80, 65, 50, 35, 20, 10]) {
+    for (const quality of [80, 65, 50, 35, 20, 10, 8]) {
       const sticker = new Sticker(normalizedImage, {
         pack: 'el mejor bot',
         author: 'el mejor bot',
@@ -1544,7 +1544,7 @@ async function createStickerWork(message, sourceMessage, mediaType, signal) {
     }
 
     if (!stickerBuffer) {
-      throw new Error('La imagen no cabe en el límite de 95 KB para stickers estáticos tras 6 niveles de compresión (último intento: ' + Math.ceil(lastSize / 1024) + ' KB).');
+      throw new Error('La imagen no cabe en el límite de 95 KB para stickers estáticos tras 7 niveles de compresión (último intento: ' + Math.ceil(lastSize / 1024) + ' KB).');
     }
 
     buffer = null;
