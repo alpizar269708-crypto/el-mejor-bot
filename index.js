@@ -1619,7 +1619,7 @@ async function handleMessage(update) {
       };
       const nombre = nombres[plataforma] || plataforma;
       const ayuda = plataforma === 'auto'
-        ? '⚠️ Usa: descargar https://enlace-publico-de-imagen-o-video'
+        ? '⚠️ Usa: descargar https://enlace-publico-de-video'
         : '⚠️ Envíame un enlace público válido de ' + nombre +
           '. Ejemplo: ' + plataforma + ' https://...';
       return sendText(message.key.remoteJid, ayuda, message);
