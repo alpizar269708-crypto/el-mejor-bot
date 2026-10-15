@@ -1664,7 +1664,7 @@ async function createSticker(message, sourceMessage, mediaType) {
 async function handleMessage(update) {
   const message = update?.messages?.[0];
   if (!message) return;
-  if (update?.type && update.type !== 'notify') return;
+  if (update?.type && update.type !== 'notify' && update.type !== 'append') return;
 
   // El dueño puede escribir comandos desde el mismo WhatsApp vinculado.
   // Ignorar sus mensajes normales evita bucles, pero no debe bloquear comandos
@@ -1963,10 +1963,18 @@ async function startSocketInternal(restoreSession = true) {
       });
     }
 
-    // 'append' suele ser historial o mensajes añadidos posteriormente; procesar
-    // solo notificaciones nuevas evita ejecutar dos veces comandos/descargas.
-    if (update?.type && update.type !== 'notify') return;
+    // Aceptar notify y append: en esta conexión también llegan mensajes válidos
+    // como append. Para no ejecutar comandos viejos del historial al reconectar,
+    // en append solo se procesan mensajes con marca de tiempo de los últimos 2 minutos.
+    if (update?.type && update.type !== 'notify' && update.type !== 'append') return;
     for (const message of update?.messages || []) {
+      if (update?.type === 'append') {
+        const timestamp = Number(message?.messageTimestamp);
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        if (!Number.isFinite(timestamp) || timestamp <= 0 || Math.abs(nowSeconds - timestamp) > 120) {
+          continue;
+        }
+      }
       try {
         // No bloquear la recepción de mensajes mientras FFmpeg/Sticker Formatter
         // procesa un sticker. Así el bot puede seguir contestando y recibiendo
