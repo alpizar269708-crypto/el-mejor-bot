@@ -419,6 +419,20 @@ function scheduleMemorySave(delay = 120000) {
   }, delay);
 }
 
+function moveDirectoryPortable(source, destination) {
+  try {
+    fs.renameSync(source, destination);
+    return;
+  } catch (error) {
+    if (error?.code !== 'EXDEV') throw error;
+  }
+
+  // Render puede montar directorios en dispositivos distintos. En ese caso,
+  // copiar primero y retirar el origen solo después de completar la copia.
+  fs.cpSync(source, destination, { recursive: true, errorOnExist: false, force: false });
+  fs.rmSync(source, { recursive: true, force: true });
+}
+
 function quarantineLocalSessionDirectory(reason = 'rejected') {
   if (!fs.existsSync(SESSION_DIR)) {
     fs.mkdirSync(SESSION_DIR, { recursive: true });
@@ -434,7 +448,7 @@ function quarantineLocalSessionDirectory(reason = 'rejected') {
   try {
     // Apartar la carpeta completa en vez de destruir credenciales locales.
     // Está fuera de SESSION_DIR, así que no se sube como sesión activa.
-    fs.renameSync(SESSION_DIR, destination);
+    moveDirectoryPortable(SESSION_DIR, destination);
     fs.mkdirSync(SESSION_DIR, { recursive: true });
     console.warn('📦 La copia local de la sesión se apartó para conservarla; no se borró.');
     return true;
@@ -479,15 +493,15 @@ function restoreSessionFiles(files, filename) {
     // Preparar la restauración completa fuera de SESSION_DIR para no dejar
     // credenciales a medias si el proceso falla durante la escritura.
     if (fs.existsSync(SESSION_DIR)) {
-      fs.renameSync(SESSION_DIR, previousDir);
+      moveDirectoryPortable(SESSION_DIR, previousDir);
       movedPrevious = true;
     }
 
     try {
-      fs.renameSync(restoreDir, SESSION_DIR);
+      moveDirectoryPortable(restoreDir, SESSION_DIR);
     } catch (error) {
       if (movedPrevious && !fs.existsSync(SESSION_DIR)) {
-        try { fs.renameSync(previousDir, SESSION_DIR); } catch {}
+        try { moveDirectoryPortable(previousDir, SESSION_DIR); } catch (restoreError) { console.error('❌ No se pudo recuperar la carpeta anterior tras fallar la restauración:', restoreError.message); }
       }
       throw error;
     }
