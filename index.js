@@ -1082,6 +1082,7 @@ let reconnectAttempts = 0;
 let sessionRecoveryFailures = 0;
 let remotePrimarySessionRejected = false;
 let lastConnectedAt = null;
+let onlineAnnouncementSent = false;
 let lastDisconnectAt = null;
 let lastDisconnectCode = null;
 let lastDisconnectReason = null;
@@ -1933,6 +1934,36 @@ async function startSocketInternal(restoreSession = true) {
 
       console.log('✅ el mejor bot conectado');
       console.log('🟢 WhatsApp conectado:', lastConnectedAt);
+
+      // Aviso de prueba: al conectar, localizar el grupo por nombre y anunciar que el bot está en línea.
+      // Solo se envía una vez por proceso para evitar mensajes repetidos durante reconexiones.
+      if (!onlineAnnouncementSent) {
+        try {
+          const participatingGroups = await newSock.groupFetchAllParticipating();
+          const normalizeGroupName = value => String(value || '')
+            .normalize('NFD')
+            .replace(/[\\u0300-\\u036f]/g, '')
+            .trim()
+            .toLowerCase();
+          const targetGroup = Object.entries(participatingGroups || {}).find(
+            ([jid, metadata]) =>
+              jid.endsWith('@g.us') &&
+              normalizeGroupName(metadata?.subject) === 'bot de stickers'
+          );
+
+          if (!targetGroup) {
+            console.warn('⚠️ No se encontró el grupo exacto "Bot de stickers"; no se pudo enviar el aviso.');
+          } else if (myGeneration === socketGeneration && sock === newSock) {
+            await newSock.sendMessage(targetGroup[0], {
+              text: '🟢 ¡Ya estoy en línea! El bot de stickers está conectado y listo para recibir imágenes y videos. 🤖'
+            });
+            onlineAnnouncementSent = true;
+            console.log('✅ Aviso de conexión enviado al grupo "Bot de stickers".');
+          }
+        } catch (announcementError) {
+          console.error('❌ No se pudo enviar el aviso al grupo "Bot de stickers":', announcementError.message);
+        }
+      }
 
       // Si el socket abrió, la sesión está autenticada. Algunas vinculaciones
       // dejan registered=false en el archivo local hasta el siguiente creds.update;
