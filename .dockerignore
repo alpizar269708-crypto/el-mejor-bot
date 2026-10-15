@@ -8,5 +8,6 @@ npm-debug.log*
 !.env.example
 session/*
 !session/.gitkeep
-.venv-gallery-dl
+.venv
+.cache
 .session-quarantine-*
