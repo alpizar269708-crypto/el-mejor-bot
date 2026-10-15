@@ -72,12 +72,27 @@ const DIRECT_MEDIA_EXTENSIONS = new Set([
 ]);
 const YTDLP_MEDIA_EXTENSIONS = /\.(?:mp4|m4v|mov|webm|mkv|avi|3gp|mpeg|mpg|flv|ts)$/i;
 
-function encolarDescarga(trabajo) {
+function notificarPosicionesCola() {
+  const total = colaDescargas.length;
+  colaDescargas.forEach((job, index) => {
+    const position = index + 1;
+    if (job.ultimaPosicionNotificada === position) return;
+    job.ultimaPosicionNotificada = position;
+    if (typeof job.onPosition === 'function') {
+      Promise.resolve(job.onPosition(position, total)).catch(error => {
+        console.warn('No se pudo notificar la posición de descarga:', String(error?.message || error).slice(0, 140));
+      });
+    }
+  });
+}
+
+function encolarDescarga(trabajo, onPosition = null) {
   if (colaDescargas.length >= MAX_COLA_DESCARGAS) {
     throw new Error('La cola está llena por ahora. Intenta de nuevo en unos minutos.');
   }
   return new Promise((resolve, reject) => {
-    colaDescargas.push({ trabajo, resolve, reject });
+    colaDescargas.push({ trabajo, resolve, reject, onPosition, ultimaPosicionNotificada: null });
+    notificarPosicionesCola();
     procesarColaDescargas().catch(error => console.error('Cola de descargas:', error.message));
   });
 }
@@ -88,6 +103,7 @@ async function procesarColaDescargas() {
   try {
     while (colaDescargas.length) {
       const job = colaDescargas.shift();
+      notificarPosicionesCola();
       trabajoActivoDesde = Date.now();
       controladorDescargaActiva = new AbortController();
       descargaCancelada = false;
@@ -1613,6 +1629,10 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma = 'aut
         await result.cleanup().catch(() => {});
       }
       return true;
+    }, async (position, total) => {
+      await sock.sendMessage(chatId, {
+        text: '⏳ Tu descarga está en la posición *' + position + ' de ' + total + '* en la fila de espera. Te avisaré cuando comience.'
+      }, { quoted: msg });
     });
   } catch (error) {
     console.error('Error descargando ' + nombre + ':', error.message);
