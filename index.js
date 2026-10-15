@@ -1092,6 +1092,8 @@ const processing = new Set();
 const processedMessageIds = new Set();
 let lastMessageReceivedAt = null;
 let lastMessageProcessedAt = null;
+let lastMessageChatType = null;
+let lastMessageJid = null;
 
 function getText(message) {
   const m = unwrapMessage(message);
@@ -1613,8 +1615,18 @@ async function createSticker(message, sourceMessage, mediaType) {
 
 async function handleMessage(update) {
   const message = update?.messages?.[0];
-  if (!message || message.key?.fromMe) return;
+  if (!message) return;
   if (update?.type && update.type !== 'notify') return;
+
+  // El dueño puede escribir comandos desde el mismo WhatsApp vinculado.
+  // Ignorar sus mensajes normales evita bucles, pero no debe bloquear comandos
+  // explícitos como "menu" enviados desde ese número dentro de un grupo.
+  const text = getText(message);
+  const explicitCommand =
+    /^(menu|ayuda|help|liberarcache|sticker|s|st)$/i.test(text.trim()) ||
+    Boolean(analizarSolicitudDescarga(text));
+  if (message.key?.fromMe && !explicitCommand) return;
+
   const messageId = message.key?.id;
   const processedId = messageId
     ? [message.key?.remoteJid || '', message.key?.participant || '', messageId].join(':')
@@ -1627,8 +1639,14 @@ async function handleMessage(update) {
     }
   }
   lastMessageReceivedAt = new Date().toISOString();
-
-  const text = getText(message);
+  lastMessageChatType = String(message.key?.remoteJid || '').endsWith('@g.us') ? 'grupo' : 'privado';
+  lastMessageJid = message.key?.remoteJid || null;
+  console.log('📩 Mensaje recibido (' + lastMessageChatType + '):', {
+    jid: lastMessageJid,
+    fromMe: message.key?.fromMe === true,
+    tipo: Object.keys(unwrapMessage(message) || {}).join(',') || 'sin tipo',
+    comando: text.slice(0, 80)
+  });
 
   // Registro ligero en memoria: no toca GitHub aquí.
   // Solo actualiza RAM y el guardado se agrupa en segundo plano.
@@ -1887,7 +1905,9 @@ async function startSocketInternal(restoreSession = true) {
         // procesa un sticker. Así el bot puede seguir contestando y recibiendo
         // mensajes aunque un video tarde en convertirse.
         handleMessage({ type: update?.type, messages: [message] }).catch(error => {
-          console.error('Error procesando mensaje:', error);
+          console.error('❌ Error procesando mensaje (' +
+            (String(message.key?.remoteJid || '').endsWith('@g.us') ? 'grupo' : 'privado') +
+            ', jid=' + (message.key?.remoteJid || 'desconocido') + '):', error);
         });
       } catch (error) {
         console.error('Error iniciando procesamiento del mensaje:', error);
@@ -2341,6 +2361,10 @@ app.get('/health', (_req, res) => {
     ultimoErrorSubidaSesion: lastSessionUploadError,
     fallosConsecutivosSubida: sessionUploadFailures,
     ultimaConexion: lastConnectedAt,
+    ultimoMensajeRecibido: lastMessageReceivedAt,
+    ultimoMensajeProcesado: lastMessageProcessedAt,
+    ultimoChatTipo: lastMessageChatType,
+    ultimoChatJid: lastMessageJid,
     ultimaDesconexion: lastDisconnectAt,
     ultimoCodigoDesconexion: lastDisconnectCode,
     ultimoMotivoDesconexion: lastDisconnectReason,
