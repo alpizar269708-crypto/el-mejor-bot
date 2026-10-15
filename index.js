@@ -1168,7 +1168,7 @@ function distanciaEdicion(a, b) {
 function coincideComando(text, esperado) {
   const recibido = normalizarComando(text);
   if (recibido === esperado) return true;
-  const limite = esperado.length >= 8 ? 2 : 1;
+  const limite = esperado.length >= 4 ? 2 : 0;
   return distanciaEdicion(recibido, esperado) <= limite;
 }
 
