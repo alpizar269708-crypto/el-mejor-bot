@@ -1393,6 +1393,59 @@ async function descargarArchivos(url, plataforma = 'auto', onProgress = null) {
   }
 }
 
+async function normalizarVideoParaWhatsApp(archivo, tempDir, indice = 1) {
+  if (archivo?.tipo !== 'video') return archivo;
+
+  const salida = path.join(
+    tempDir,
+    String(indice).padStart(3, '0') + '-whatsapp-compatible.mp4'
+  );
+
+  // Estandarizar códecs y metadatos para mejorar la reproducción entre teléfonos.
+  // H.264 + AAC, píxeles YUV 4:2:0 y faststart son compatibles con la mayoría de clientes.
+  await execFileAsync(ffmpegInstaller.path, [
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-y',
+    '-i', archivo.path,
+    '-map', '0:v:0',
+    '-map', '0:a:0?',
+    '-sn',
+    '-dn',
+    '-vf', 'scale=1280:1280:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2',
+    '-c:v', 'libx264',
+    '-preset', 'veryfast',
+    '-crf', '23',
+    '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac',
+    '-b:a', '128k',
+    '-movflags', '+faststart',
+    '-map_metadata', '-1',
+    salida
+  ], {
+    timeout: 5 * 60 * 1000,
+    maxBuffer: 4 * 1024 * 1024,
+    windowsHide: true
+  });
+
+  const stat = await fs.promises.stat(salida).catch(() => null);
+  if (!stat?.isFile() || stat.size <= 0) {
+    throw new Error('FFmpeg no generó un video MP4 válido para WhatsApp.');
+  }
+  if (stat.size > MAX_MEDIA_BYTES) {
+    await fs.promises.rm(salida, { force: true }).catch(() => {});
+    throw new Error('El video convertido supera el límite de 100 MB.');
+  }
+
+  return {
+    ...archivo,
+    path: salida,
+    nombre: path.basename(salida),
+    mimetype: 'video/mp4',
+    size: stat.size
+  };
+}
+
 function tipoEnvioWhatsApp(archivo) {
   const size = Number(archivo?.size || 0);
 
@@ -1459,15 +1512,20 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma = 'aut
       await progress('Descarga completada', 'Se obtuvieron ' + result.archivos.length + ' archivo(s). Ahora intentaré enviarlos por WhatsApp.');
       try {
         for (let i = 0; i < result.archivos.length; i++) {
-          const archivo = result.archivos[i];
+          let archivo = result.archivos[i];
+          if (archivo.tipo === 'video') {
+            archivo = await normalizarVideoParaWhatsApp(archivo, path.dirname(archivo.path), i + 1);
+          }
           const mediaKey = tipoEnvioWhatsApp(archivo);
-          const caption = crearCaptionDescarga(archivo, mediaKey, i, result.archivos.length);
           const media = { url: archivo.path };
           const payload = {
             [mediaKey]: media,
-            mimetype: archivo.mimetype,
-            caption
+            mimetype: archivo.mimetype
           };
+          // Los videos se envían sin pie/caption: solo el archivo de video.
+          if (archivo.tipo !== 'video') {
+            payload.caption = crearCaptionDescarga(archivo, mediaKey, i, result.archivos.length);
+          }
           if (mediaKey === 'document') payload.fileName = archivo.nombre;
           await sock.sendMessage(chatId, payload, { quoted: msg });
         }
