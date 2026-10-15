@@ -30,14 +30,6 @@ const colaDescargas = [];
 let descargaActiva = false;
 let trabajoActivoDesde = null;
 
-const IMAGE_MIME_EXT = {
-  'image/jpeg': '.jpg',
-  'image/png': '.png',
-  'image/webp': '.webp',
-  'image/gif': '.gif',
-  'image/avif': '.avif',
-  'image/bmp': '.bmp'
-};
 const VIDEO_MIME_EXT = {
   'video/mp4': '.mp4',
   'video/webm': '.webm',
@@ -50,11 +42,10 @@ const VIDEO_MIME_EXT = {
   'video/mp2t': '.ts'
 };
 const DIRECT_MEDIA_EXTENSIONS = new Set([
-  '.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif', '.bmp',
   '.mp4', '.m4v', '.mov', '.webm', '.mkv', '.avi', '.3gp',
   '.mpeg', '.mpg', '.flv', '.ts'
 ]);
-const YTDLP_MEDIA_EXTENSIONS = /\.(?:mp4|m4v|mov|webm|mkv|avi|3gp|mpeg|mpg|flv|ts|jpe?g|png|webp|avif|gif|bmp)$/i;
+const YTDLP_MEDIA_EXTENSIONS = /\\.(?:mp4|m4v|mov|webm|mkv|avi|3gp|mpeg|mpg|flv|ts)$/i;
 
 function encolarDescarga(trabajo) {
   if (colaDescargas.length >= MAX_COLA_DESCARGAS) {
@@ -359,12 +350,12 @@ async function descargaDirecta(urlInicial, tempDir, index = 1, extraHeaders = {}
     const contentLength = Number(response.headers.get('content-length') || 0);
     const extensionUrl = path.extname(url.pathname).toLowerCase();
     const allowedByExtension = DIRECT_MEDIA_EXTENSIONS.has(extensionUrl);
-    const extensionByMime = IMAGE_MIME_EXT[contentType] || VIDEO_MIME_EXT[contentType];
+    const extensionByMime = VIDEO_MIME_EXT[contentType];
     const extensionByDisposition = extensionDesdeContentDisposition(response.headers.get('content-disposition'));
-    const responseIsMedia = contentType.startsWith('image/') || contentType.startsWith('video/');
+    const responseIsVideo = contentType.startsWith('video/');
     const responseIsBinary = ['', 'application/octet-stream', 'binary/octet-stream', 'application/binary'].includes(contentType);
-    if (!responseIsMedia && !(allowedByExtension && responseIsBinary) && !(extensionByDisposition && responseIsBinary)) {
-      throw new Error('El enlace directo no respondió una imagen o video reconocible (tipo ' + (contentType || 'desconocido') + ').');
+    if (!responseIsVideo && !(allowedByExtension && responseIsBinary) && !(extensionByDisposition && responseIsBinary)) {
+      throw new Error('Este bot solo descarga videos; el enlace no respondió un video reconocible (tipo ' + (contentType || 'desconocido') + ').');
     }
     if (contentLength > MAX_MEDIA_BYTES) {
       throw new Error('El archivo supera el límite de descarga de 100 MB.');
@@ -390,7 +381,7 @@ async function descargaDirecta(urlInicial, tempDir, index = 1, extraHeaders = {}
     const stat = await fs.promises.stat(destino);
     if (!stat.size || stat.size > MAX_MEDIA_BYTES) throw new Error('El archivo vacío o supera los 100 MB.');
 
-    const responseMime = /^(?:image|video)\//.test(contentType) ? contentType : null;
+    const responseMime = /^video\\//.test(contentType) ? contentType : null;
     const mime = responseMime || mimetypeDesdeExtension(extension);
     return {
       path: destino,
@@ -1345,72 +1336,7 @@ async function descargarArchivos(url, plataforma = 'auto', onProgress = null) {
       await reportarProgreso(onProgress, 'yt-dlp 2/2', 'Archivos encontrados después del segundo intento: ' + archivos.length + '.');
     }
 
-    // yt-dlp prioriza video/audio; para posts solo de fotos extraer URLs de
-    // imágenes de la página pública de Instagram antes de probar miniaturas.
-    if (!archivos.length && plataformaEfectiva === 'instagram') {
-      await reportarProgreso(onProgress, 'Fallback de fotos', 'yt-dlp no produjo archivos; activando los métodos específicos para imágenes de Instagram.');
-      await limpiarDirectorio(tempDir);
-      await fs.promises.mkdir(tempDir, { recursive: true });
-      let detalleImagenesInstagram = '';
-      try {
-        archivos = await descargarImagenesInstagram(parsed.toString(), tempDir, onProgress);
-      } catch (imageError) {
-        detalleImagenesInstagram = String(imageError?.stderr || imageError?.message || imageError)
-          .replace(/\\s+/g, ' ').trim().slice(0, 500);
-        console.warn('⚠️ Fallback de imágenes de Instagram:', detalleImagenesInstagram);
-      }
-
-      // Conserva el fallback de miniatura como segunda alternativa para URLs
-      // públicas cuyo HTML no expone las imágenes originales.
-      if (!archivos.length) {
-        await limpiarDirectorio(tempDir);
-        await fs.promises.mkdir(tempDir, { recursive: true });
-        await reportarProgreso(onProgress, 'Miniatura', 'Los métodos de fotos no devolvieron archivos; intentando recuperar la miniatura como último recurso.');
-        try {
-          await youtubedl(parsed.toString(), {
-            ...opcionesBase,
-            writeThumbnail: true,
-            ignoreNoFormatsError: true,
-            skipDownload: true
-          }, { timeout: TIMEOUT_MS });
-        } catch (thumbnailError) {
-          const detail = String(thumbnailError?.stderr || thumbnailError?.message || thumbnailError || '')
-            .replace(/\s+/g, ' ').trim().slice(0, 250);
-          console.warn('⚠️ Instagram sin video; resultado del intento de miniaturas:', detail);
-        }
-        archivos = await listarArchivosMedia(tempDir);
-      }
-
-      if (!archivos.length) {
-        await reportarProgreso(onProgress, 'Resultado', 'Ningún método devolvió imágenes; revisa el detalle de error que aparecerá a continuación.');
-        throw new Error(
-          'No se pudieron obtener las fotos de esta publicación desde el acceso público de Instagram. ' +
-          'Verifica que el post sea público e inténtalo más tarde; Instagram puede limitar temporalmente ' +
-          'las consultas anónimas desde servidores.' +
-          (detalleImagenesInstagram ? ' Diagnóstico del último método: ' + detalleImagenesInstagram : '')
-        );
-      }
-    }
-
-    // Pinterest publica pines de imagen que yt-dlp puede interpretar como
-    // publicaciones sin formatos de video. Antes del fallback directo, usar
-    // gallery-dl para recuperar las imágenes originales del pin.
-    if (!archivos.length && plataformaEfectiva === 'pinterest') {
-      await reportarProgreso(onProgress, 'Pinterest imágenes', 'yt-dlp no encontró formatos de video; buscando la imagen original del pin.');
-      await limpiarDirectorio(tempDir);
-      await fs.promises.mkdir(tempDir, { recursive: true });
-      try {
-        archivos = await descargarImagenesPinterestConGalleryDl(parsed.toString(), tempDir);
-        await reportarProgreso(onProgress, 'Pinterest imágenes', 'Se recuperaron ' + archivos.length + ' imagen(es).');
-      } catch (pinterestError) {
-        const detail = String(pinterestError?.message || pinterestError).replace(/\\s+/g, ' ').trim().slice(0, 400);
-        await reportarProgreso(onProgress, 'Pinterest imágenes', 'Falló la extracción de la imagen: ' + detail);
-        errorVideo = new Error('Pinterest no devolvió formatos de video y falló la extracción de imágenes: ' + detail);
-      }
-    }
-
-    // Fallback de URL directa: permite enlaces genéricos que respondan image/*
-    // o video/* aunque yt-dlp no tenga un extractor específico para ese host.
+    // Fallback directo solo para enlaces genéricos que respondan video/*.
     if (!archivos.length) {
       await limpiarDirectorio(tempDir);
       await fs.promises.mkdir(tempDir, { recursive: true });
@@ -1427,7 +1353,11 @@ async function descargarArchivos(url, plataforma = 'auto', onProgress = null) {
     }
 
     if (!archivos.length) {
-      throw new Error('El enlace no produjo archivos de imagen o video compatibles.');
+      throw new Error('El enlace no produjo un video compatible. Este bot ya no descarga imágenes.');
+    }
+    archivos = archivos.filter(archivo => archivo.tipo === 'video');
+    if (!archivos.length) {
+      throw new Error('El enlace solo contiene imágenes u otros archivos no compatibles. Este bot solo descarga videos.');
     }
 
     const accepted = [];
@@ -1494,8 +1424,8 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma = 'aut
   if (!url) {
     await sock.sendMessage(chatId, {
       text: plataforma === 'auto'
-        ? '⚠️ Envíame un enlace público HTTP/HTTPS de una imagen, video o publicación compatible.'
-        : '⚠️ Envíame un enlace público válido de ' + nombre + '. Ejemplo: ' + plataforma + ' https://...'
+        ? '⚠️ Envíame un enlace público de un video o una publicación con video.'
+        : '⚠️ Envíame un enlace público válido de video de ' + nombre + '. Ejemplo: ' + plataforma + ' https://...'
     }, { quoted: msg });
     return;
   }
@@ -1504,7 +1434,7 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma = 'aut
   await sock.sendMessage(chatId, {
     text: posicion > 1
       ? '🕒 Tu descarga quedó en cola. Posición aproximada: ' + posicion + '.'
-      : '⏳ Descargando el mejor archivo disponible (hasta 100 MB por archivo). Los videos largos pueden tardar varios minutos...'
+      : '⏳ Descargando el mejor video disponible (hasta 100 MB por archivo). Los videos largos pueden tardar varios minutos...'
   }, { quoted: msg });
 
   try {
