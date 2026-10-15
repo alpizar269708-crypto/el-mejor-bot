@@ -858,7 +858,7 @@ function resolverComandoUtilidad(texto) {
   let empate = false;
   for (const [alias, comando] of ALIAS_UTILIDADES) {
     if (alias.length < 4) continue;
-    const limite = alias.length >= 6 ? 2 : 1;
+    const limite = alias.length >= 4 ? 2 : 0;
     const distancia = distanciaEdicion(palabra, alias);
     if (distancia > limite) continue;
     if (distancia < mejorDistancia) {
