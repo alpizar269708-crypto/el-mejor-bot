@@ -29,6 +29,22 @@ const MAX_MEDIA_FILES = 10;
 const colaDescargas = [];
 let descargaActiva = false;
 let trabajoActivoDesde = null;
+let controladorDescargaActiva = null;
+const procesosDescargaActiva = new Set();
+let descargaCancelada = false;
+
+function registrarProcesoDescarga(proceso) {
+  if (!proceso || typeof proceso.kill !== 'function') return proceso;
+  procesosDescargaActiva.add(proceso);
+  const quitar = () => procesosDescargaActiva.delete(proceso);
+  proceso.once?.('close', quitar);
+  proceso.once?.('error', quitar);
+  return proceso;
+}
+
+function desregistrarProcesoDescarga(proceso) {
+  if (proceso) procesosDescargaActiva.delete(proceso);
+}
 
 const IMAGE_MIME_EXT = {
   'image/jpeg': '.jpg',
@@ -73,12 +89,20 @@ async function procesarColaDescargas() {
     while (colaDescargas.length) {
       const job = colaDescargas.shift();
       trabajoActivoDesde = Date.now();
+      controladorDescargaActiva = new AbortController();
+      descargaCancelada = false;
       try {
-        job.resolve(await job.trabajo());
+        job.resolve(await job.trabajo(controladorDescargaActiva.signal));
       } catch (error) {
         job.reject(error);
       } finally {
+        for (const proceso of [...procesosDescargaActiva]) {
+          try { proceso.kill('SIGKILL'); } catch {}
+        }
+        procesosDescargaActiva.clear();
+        controladorDescargaActiva = null;
         trabajoActivoDesde = null;
+        descargaCancelada = false;
       }
     }
   } finally {
@@ -92,15 +116,31 @@ function liberarColaDescargas() {
   for (const job of pendientes) {
     job.reject(new Error('Solicitud cancelada por liberarcache.'));
   }
+
+  const activaAntes = descargaActiva;
+  const segundosActiva = trabajoActivoDesde
+    ? Math.floor((Date.now() - trabajoActivoDesde) / 1000)
+    : 0;
+  if (controladorDescargaActiva && !controladorDescargaActiva.signal.aborted) {
+    descargaCancelada = true;
+    controladorDescargaActiva.abort(new Error('Solicitud cancelada por liberarcache.'));
+  }
+  let procesosCancelados = 0;
+  for (const proceso of [...procesosDescargaActiva]) {
+    try {
+      proceso.kill('SIGKILL');
+      procesosCancelados += 1;
+    } catch {}
+  }
   if (typeof global.gc === 'function') {
     try { global.gc(); } catch {}
   }
   return {
     pendientesCancelados: pendientes.length,
-    descargaActiva,
-    segundosActiva: trabajoActivoDesde
-      ? Math.floor((Date.now() - trabajoActivoDesde) / 1000)
-      : 0,
+    descargaActiva: activaAntes,
+    descargaActivaCancelada: Boolean(controladorDescargaActiva),
+    procesosCancelados,
+    segundosActiva,
     recoleccionForzadaDisponible: typeof global.gc === 'function'
   };
 }
@@ -321,7 +361,13 @@ async function descargaDirecta(urlInicial, tempDir, index = 1, extraHeaders = {}
   if (!url) throw new Error('El enlace debe ser una URL HTTP/HTTPS pública válida.');
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const signalActiva = controladorDescargaActiva?.signal;
+  const cancelarPorSolicitud = () => controller.abort(
+    signalActiva?.reason || new Error('Solicitud cancelada por liberarcache.')
+  );
+  if (signalActiva?.aborted) cancelarPorSolicitud();
+  else signalActiva?.addEventListener('abort', cancelarPorSolicitud, { once: true });
+  const timeout = setTimeout(() => controller.abort(new Error('Tiempo límite de descarga agotado.')), TIMEOUT_MS);
   let response = null;
   let destino = null;
 
@@ -405,6 +451,7 @@ async function descargaDirecta(urlInicial, tempDir, index = 1, extraHeaders = {}
     throw error;
   } finally {
     clearTimeout(timeout);
+    signalActiva?.removeEventListener('abort', cancelarPorSolicitud);
     try {
       if (response?.body && !response.bodyUsed) await response.body.cancel();
     } catch {}
@@ -1322,7 +1369,8 @@ async function descargarArchivos(url, plataforma = 'auto', onProgress = null) {
     let errorVideo = null;
     await reportarProgreso(onProgress, 'yt-dlp 1/2', 'Intentando extraer medios con la selección de mejor calidad.');
     try {
-      await youtubedl(parsed.toString(), opcionesVideo, { timeout: TIMEOUT_MS });
+      const procesoVideo = registrarProcesoDescarga(youtubedl(parsed.toString(), opcionesVideo, { timeout: TIMEOUT_MS }));
+      try { await procesoVideo; } finally { desregistrarProcesoDescarga(procesoVideo); }
     } catch (error) {
       errorVideo = error;
       await limpiarDirectorio(tempDir);
@@ -1337,7 +1385,8 @@ async function descargarArchivos(url, plataforma = 'auto', onProgress = null) {
     if (!archivos.length) {
       await reportarProgreso(onProgress, 'yt-dlp 2/2', 'El primer intento no dejó archivos; probando sin filtro de formato.');
       try {
-        await youtubedl(parsed.toString(), opcionesBase, { timeout: TIMEOUT_MS });
+        const procesoBase = registrarProcesoDescarga(youtubedl(parsed.toString(), opcionesBase, { timeout: TIMEOUT_MS }));
+        try { await procesoBase; } finally { desregistrarProcesoDescarga(procesoBase); }
       } catch (errorBase) {
         errorVideo = errorBase || errorVideo;
       }
@@ -1493,12 +1542,17 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma = 'aut
   }
 
   try {
-    await encolarDescarga(async () => {
+    await encolarDescarga(async (signal) => {
+      if (signal?.aborted) throw new Error('Descarga cancelada por liberarcache.');
       const esInstagram = plataforma === 'instagram' || detectarPlataforma(url) === 'instagram';
       const progress = async (stage, detail) => {
         if (esInstagram) console.log('[Descarga Instagram] ' + stage + ': ' + detail);
       };
       const result = await descargarArchivos(url, plataforma, (event) => progress(event.etapa, event.detalle));
+      if (signal?.aborted) {
+        await result.cleanup().catch(() => {});
+        throw new Error('Descarga cancelada por liberarcache.');
+      }
       try {
         for (let i = 0; i < result.archivos.length; i++) {
           let archivo = result.archivos[i];
