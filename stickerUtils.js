@@ -79,17 +79,19 @@ function buildVideoStickerAttempts(duration) {
   // Priorizar movimiento fluido y reducir calidad antes que caer a 3–5 FPS.
   // Si el original es corto (p. ej. 3 s), nunca se alarga ni se recorta.
   return [
-    { fps: 15, quality: 60, size: 512, duration: actualDuration },
-    { fps: 15, quality: 50, size: 512, duration: actualDuration },
-    { fps: 12, quality: 50, size: 512, duration: actualDuration },
-    { fps: 12, quality: 40, size: 512, duration: actualDuration },
-    { fps: 10, quality: 35, size: 512, duration: actualDuration },
-    { fps: 10, quality: 28, size: 512, duration: actualDuration },
-    // Al reducir el detalle espacial, preservar FPS antes de degradar el movimiento.
-    { fps: 10, quality: 24, size: 448, duration: actualDuration },
-    { fps: 10, quality: 20, size: 416, duration: actualDuration },
-    { fps: 8, quality: 20, size: 416, duration: actualDuration },
-    { fps: 8, quality: 20, size: 384, duration: Math.min(actualDuration, 6) },
+    // Priorizar 18–20 FPS para que los movimientos se vean fluidos; bajar
+    // calidad antes de bajar fotogramas si el WebP rebasa el límite de WhatsApp.
+    { fps: 20, quality: 50, size: 512, duration: actualDuration },
+    { fps: 20, quality: 40, size: 512, duration: actualDuration },
+    { fps: 18, quality: 40, size: 512, duration: actualDuration },
+    { fps: 15, quality: 45, size: 512, duration: actualDuration },
+    { fps: 15, quality: 35, size: 512, duration: actualDuration },
+    { fps: 15, quality: 28, size: 512, duration: actualDuration },
+    { fps: 12, quality: 30, size: 512, duration: actualDuration },
+    // Reducir el área útil solo cuando sea necesario, manteniendo el lienzo 512x512.
+    { fps: 12, quality: 24, size: 448, duration: actualDuration },
+    { fps: 10, quality: 24, size: 416, duration: actualDuration },
+    { fps: 10, quality: 20, size: 384, duration: Math.min(actualDuration, 6) },
     { fps: 8, quality: 18, size: 352, duration: Math.min(actualDuration, 4) }
   ];
 }
