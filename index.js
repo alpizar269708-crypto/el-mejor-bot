@@ -1254,7 +1254,7 @@ const FFMPEG_STICKER_TIMEOUT_MS = 90000;
 const MAX_STICKER_QUEUE = 30;
 // Solo los videos compiten por los dos espacios de conversión; las imágenes
 // empiezan inmediatamente y nunca esperan detrás de un video.
-const MAX_STICKER_VIDEO_CONCURRENCY = 2;
+const MAX_STICKER_VIDEO_CONCURRENCY = 1;
 const stickerQueue = [];
 const activeStickerJobs = new Set();
 const activeStickerVideoJobs = new Set();
@@ -1339,7 +1339,7 @@ async function createAnimatedWebpSticker(buffer, duration = 3, fps = 12, quality
         '-compression_level 6',
         '-loop 0',
         '-preset picture',
-        '-threads 2'
+        '-threads 1'
       ]);
 
     await runStickerFfmpeg(command, output, 'FFmpeg sticker animado');
@@ -1379,7 +1379,7 @@ function enqueueSticker(task, mediaType = 'image') {
 
     // Las imágenes arrancan en el acto, aunque haya dos videos convirtiéndose.
     activeStickerJobs.add(job);
-    console.log('🖼️ Procesando sticker de imagen sin cola. Videos activos: ' + activeStickerVideoJobs.size + '/2; videos pendientes: ' + stickerQueue.length);
+    console.log('🖼️ Procesando sticker de imagen sin cola. Videos activos: ' + activeStickerVideoJobs.size + '/1; videos pendientes: ' + stickerQueue.length);
     Promise.resolve()
       .then(() => job.controller.signal.aborted ? Promise.reject(new Error('Solicitud cancelada por liberarcache.')) : job.task(job.controller.signal))
       .then(job.resolve, job.reject)
@@ -1392,7 +1392,7 @@ function drainStickerQueue() {
     const job = stickerQueue.shift();
     activeStickerJobs.add(job);
     activeStickerVideoJobs.add(job);
-    console.log('🎬 Procesando sticker de video. Videos activos: ' + activeStickerVideoJobs.size + '/2; videos pendientes: ' + stickerQueue.length);
+    console.log('🎬 Procesando sticker de video. Videos activos: ' + activeStickerVideoJobs.size + '/1; videos pendientes: ' + stickerQueue.length);
     Promise.resolve()
       .then(() => job.controller.signal.aborted ? Promise.reject(new Error('Solicitud cancelada por liberarcache.')) : job.task(job.controller.signal))
       .then(job.resolve, job.reject)
