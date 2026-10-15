@@ -1124,6 +1124,9 @@ async function descargarImagenesInstagram(urlInicial, tempDir, onProgress = null
     }
 
     const html = (await response.text()).slice(0, 8_000_000);
+    if (/Reg[ií]strate en Instagram para estar siempre al d[ií]a|Sign up to see photos and videos|Log in to Instagram/i.test(html)) {
+      throw new Error('Instagram devolvió la ventana emergente de registro/inicio de sesión en lugar de los datos de la publicación; el acceso anónimo del servidor está bloqueado.');
+    }
     const candidates = extraerUrlsImagenInstagram(html);
     if (!candidates.length) {
       throw new Error('Instagram no expuso URLs públicas de imágenes en la página de la publicación.');
@@ -1166,6 +1169,92 @@ async function descargarImagenesInstagram(urlInicial, tempDir, onProgress = null
       if (response?.body && !response.bodyUsed) await response.body.cancel();
     } catch {}
   }
+}
+
+
+function extraerUrlsImagenPinterest(output) {
+  const candidates = [];
+  const seen = new Set();
+  for (const line of String(output || '').split(/\r?\n/)) {
+    const raw = line.trim().replace(/^["']|["']$/g, '');
+    if (!/^https?:\/\//i.test(raw)) continue;
+    const url = normalizarUrl(raw);
+    if (!url) continue;
+    const host = url.hostname.toLowerCase().replace(/^www\./, '');
+    const trustedHost =
+      host === 'pinimg.com' || host.endsWith('.pinimg.com') ||
+      host === 'pinterest.com' || host.endsWith('.pinterest.com') ||
+      host === 'pinterestusercontent.com' || host.endsWith('.pinterestusercontent.com');
+    const extension = path.extname(url.pathname).toLowerCase();
+    if (!trustedHost || !INSTAGRAM_IMAGE_EXTENSIONS.has(extension)) continue;
+    const normalized = url.toString();
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    candidates.push(normalized);
+    if (candidates.length >= MAX_MEDIA_FILES) break;
+  }
+  return candidates;
+}
+
+async function descargarImagenesPinterestConGalleryDl(urlInicial, tempDir) {
+  if (!fs.existsSync(GALLERY_DL_PATH)) {
+    throw new Error('gallery-dl no está instalado en el servidor; no se puede extraer la imagen de Pinterest.');
+  }
+  const argsBase = [
+    '--no-input',
+    '--range', '1-' + MAX_MEDIA_FILES,
+    '--filesize-max', '100M',
+    '--http-timeout', '25',
+    '--retries', '2'
+  ];
+  let output = '';
+  try {
+    const result = await execFileAsync(
+      GALLERY_DL_PATH,
+      [...argsBase, '--get-urls', urlInicial],
+      { timeout: GALLERY_DL_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024, windowsHide: true }
+    );
+    output = result?.stdout || '';
+  } catch (error) {
+    output = error?.stdout || '';
+    const detail = String(error?.stderr || error?.message || error).replace(/\s+/g, ' ').trim().slice(0, 300);
+    console.warn('⚠️ gallery-dl no pudo resolver la imagen de Pinterest:', detail);
+  }
+
+  const urls = extraerUrlsImagenPinterest(output);
+  const files = [];
+  for (const imageUrl of urls) {
+    try {
+      const file = await descargaDirecta(imageUrl, tempDir, files.length + 1, {
+        Referer: 'https://www.pinterest.com/'
+      });
+      if (file.tipo === 'image') files.push(file);
+      else await fs.promises.rm(file.path, { force: true }).catch(() => {});
+    } catch (error) {
+      console.warn('⚠️ No se pudo descargar una imagen de Pinterest:', String(error?.message || error).slice(0, 180));
+    }
+    if (files.length >= MAX_MEDIA_FILES) break;
+  }
+  if (files.length) return files;
+
+  // Segunda alternativa: dejar que gallery-dl gestione la descarga y nombres.
+  try {
+    await execFileAsync(
+      GALLERY_DL_PATH,
+      [...argsBase, '--directory', tempDir, urlInicial],
+      { timeout: GALLERY_DL_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024, windowsHide: true }
+    );
+  } catch (error) {
+    const detail = String(error?.stderr || error?.message || error).replace(/\s+/g, ' ').trim().slice(0, 350);
+    throw new Error('gallery-dl no pudo descargar la imagen de Pinterest: ' + detail);
+  }
+  const downloaded = await listarArchivosMedia(tempDir);
+  const images = downloaded.filter(file => file.tipo === 'image').slice(0, MAX_MEDIA_FILES);
+  for (const file of downloaded.filter(file => file.tipo !== 'image')) {
+    await fs.promises.rm(file.path, { force: true }).catch(() => {});
+  }
+  if (!images.length) throw new Error('gallery-dl no devolvió archivos de imagen de Pinterest.');
+  return images;
 }
 
 async function descargarArchivos(url, plataforma = 'auto', onProgress = null) {
@@ -1300,6 +1389,23 @@ async function descargarArchivos(url, plataforma = 'auto', onProgress = null) {
           'las consultas anónimas desde servidores.' +
           (detalleImagenesInstagram ? ' Diagnóstico del último método: ' + detalleImagenesInstagram : '')
         );
+      }
+    }
+
+    // Pinterest publica pines de imagen que yt-dlp puede interpretar como
+    // publicaciones sin formatos de video. Antes del fallback directo, usar
+    // gallery-dl para recuperar las imágenes originales del pin.
+    if (!archivos.length && plataformaEfectiva === 'pinterest') {
+      await reportarProgreso(onProgress, 'Pinterest imágenes', 'yt-dlp no encontró formatos de video; buscando la imagen original del pin.');
+      await limpiarDirectorio(tempDir);
+      await fs.promises.mkdir(tempDir, { recursive: true });
+      try {
+        archivos = await descargarImagenesPinterestConGalleryDl(parsed.toString(), tempDir);
+        await reportarProgreso(onProgress, 'Pinterest imágenes', 'Se recuperaron ' + archivos.length + ' imagen(es).');
+      } catch (pinterestError) {
+        const detail = String(pinterestError?.message || pinterestError).replace(/\\s+/g, ' ').trim().slice(0, 400);
+        await reportarProgreso(onProgress, 'Pinterest imágenes', 'Falló la extracción de la imagen: ' + detail);
+        errorVideo = new Error('Pinterest no devolvió formatos de video y falló la extracción de imágenes: ' + detail);
       }
     }
 
