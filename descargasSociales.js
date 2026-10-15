@@ -1561,9 +1561,25 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma = 'aut
     return;
   }
 
+  // Confirmar recepción antes de iniciar cualquier descarga o esperar turno en la cola.
+  try {
+    await sock.sendMessage(chatId, {
+      text: '📩 Ya leí tu mensaje y recibí el enlace. Estoy preparando la descarga; te aviso aquí si termina o si ocurre un error.'
+    }, { quoted: msg });
+  } catch (notifyError) {
+    console.warn('No se pudo enviar el aviso inicial de descarga:', String(notifyError?.message || notifyError).slice(0, 180));
+  }
+
   try {
     await encolarDescarga(async (signal) => {
       if (signal?.aborted) throw new Error('Descarga cancelada por liberarcache.');
+      try {
+        await sock.sendMessage(chatId, {
+          text: '⬇️ Ya empecé a descargar el enlace. Puede tardar un poco si el video es largo.'
+        }, { quoted: msg });
+      } catch (notifyError) {
+        console.warn('No se pudo enviar el aviso de inicio de descarga:', String(notifyError?.message || notifyError).slice(0, 180));
+      }
       const esInstagram = plataforma === 'instagram' || detectarPlataforma(url) === 'instagram';
       const progress = async (stage, detail) => {
         if (esInstagram) console.log('[Descarga Instagram] ' + stage + ': ' + detail);
