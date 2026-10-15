@@ -30,6 +30,15 @@ const colaDescargas = [];
 let descargaActiva = false;
 let trabajoActivoDesde = null;
 
+const IMAGE_MIME_EXT = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
+  'image/avif': '.avif',
+  'image/gif': '.gif',
+  'image/bmp': '.bmp'
+};
+
 const VIDEO_MIME_EXT = {
   'video/mp4': '.mp4',
   'video/webm': '.webm',
