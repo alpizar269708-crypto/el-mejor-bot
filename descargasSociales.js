@@ -252,28 +252,50 @@ function extraerUrl(texto, plataforma = 'auto') {
 }
 
 
+function distanciaComando(a, b) {
+  if (Math.abs(a.length - b.length) > 2) return 3;
+  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(current[j - 1] + 1, previous[j] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    previous = current;
+  }
+  return previous[b.length];
+}
+
 function analizarSolicitudDescarga(texto) {
   const trimmed = String(texto || '').trim();
   if (!trimmed) return null;
+  const normalized = trimmed.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
-  const generic = trimmed.match(/^(?:descargar|descarga|download)(?:\s+([\s\S]+))?$/);
-  if (generic) {
+  const genericMatch = normalized.match(/^(\S+)(?:\s+([\s\S]+))?$/);
+  const genericWord = genericMatch?.[1] || '';
+  const genericAliases = ['descargar', 'descarga', 'download'];
+  const genericCommand = genericAliases.find(word => genericWord === word || distanciaComando(genericWord, word) <= (word.length >= 8 ? 2 : 1));
+  if (genericCommand && (genericMatch?.[2] !== undefined || trimmed.split(/\s+/).length === 1)) {
     return {
       tipo: 'generic',
       plataforma: 'auto',
-      enlace: String(generic[1] || '').trim()
+      enlace: String(genericMatch?.[2] || '').trim()
     };
   }
 
-  // Tratar la palabra como comando solo si después hay espacio o fin de texto.
-  // Así "instagram.com/reel/..." y "youtube.com/watch?..." siguen siendo URLs.
-  const command = trimmed.match(/^(tiktok|instagram|x|twitter|youtube|pinterest|facebook|reddit|threads)(?=\s|$)/);
-  if (command) {
-    const rawPlatform = command[1].toLowerCase();
+  // Acepta variaciones de mayúsculas y pequeños errores tipográficos,
+  // pero no confunde dominios como instagram.com con comandos.
+  const platformMatch = normalized.match(/^(\S+)(?:\s+([\s\S]*))?$/);
+  const platformWord = platformMatch?.[1] || '';
+  const platforms = ['tiktok', 'instagram', 'x', 'twitter', 'youtube', 'pinterest', 'facebook', 'reddit', 'threads'];
+  const matchedPlatform = platforms.find(word =>
+    platformWord === word || (platformMatch?.[2] !== undefined && distanciaComando(platformWord, word) <= (word.length >= 8 ? 2 : 1))
+  );
+  if (matchedPlatform && (platformMatch?.[2] !== undefined || matchedPlatform === platformWord)) {
+    const rawPlatform = matchedPlatform;
     return {
       tipo: 'platform',
       plataforma: rawPlatform === 'twitter' ? 'x' : rawPlatform,
-      enlace: trimmed.slice(command[0].length).trim()
+      enlace: String(platformMatch?.[2] || '').trim()
     };
   }
 
