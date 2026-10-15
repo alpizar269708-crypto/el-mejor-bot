@@ -1942,7 +1942,7 @@ async function startSocketInternal(restoreSession = true) {
           const participatingGroups = await newSock.groupFetchAllParticipating();
           const normalizeGroupName = value => String(value || '')
             .normalize('NFD')
-            .replace(/[\\u0300-\\u036f]/g, '')
+            .replace(/[\u0300-\u036f]/g, '')
             .trim()
             .toLowerCase();
           const targetGroup = Object.entries(participatingGroups || {}).find(
