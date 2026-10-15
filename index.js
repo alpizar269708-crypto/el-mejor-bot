@@ -22,8 +22,6 @@ const { validateSessionSnapshot } = require('./sessionUtils');
 
 const crypto = require('crypto');
 const { execFile } = require('child_process');
-const { promisify } = require('util');
-const execFileAsync = promisify(execFile);
 
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
