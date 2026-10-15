@@ -16,7 +16,6 @@ Variables necesarias en Render:
 - `GITHUB_TOKEN`: token con permisos de contenido para este repositorio.
 - `SESSION_PASSWORD`: contraseña fuerte para cifrar la sesión.
 - `SESSION_BRANCH=session-data`: rama de la sesión cifrada.
-- `MEMORY_BRANCH=memory-data`: rama de memoria persistente.
 - `ADMIN_PASSWORD`: contraseña del panel administrativo, si se desea distinta de SESSION_PASSWORD.
 
 No subas `.env`, credenciales ni sesiones sin cifrar al repositorio.
