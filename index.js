@@ -1569,11 +1569,6 @@ async function createSticker(message, sourceMessage, mediaType) {
 async function handleMessage(update) {
   const message = update?.messages?.[0];
   if (!message || message.key?.fromMe) return;
-  console.log('⚙️ Procesando mensaje entrante:', JSON.stringify({
-    type: update?.type || null,
-    hasText: Boolean(getText(message)),
-    messageType: Object.keys(message?.message || {})[0] || null
-  }));
   if (update?.type && update.type !== 'notify') return;
   const messageId = message.key?.id;
   const processedId = messageId
@@ -1824,22 +1819,11 @@ async function startSocketInternal(restoreSession = true) {
   });
 
   newSock.ev.on('messages.upsert', async update => {
-    // Diagnóstico temporal: confirmar si Baileys entrega mensajes entrantes a Render.
-    console.log('📩 messages.upsert:', JSON.stringify({
-      type: update?.type || null,
-      count: Array.isArray(update?.messages) ? update.messages.length : 0,
-      generationCurrent: myGeneration === socketGeneration && sock === newSock
-    }));
     if (myGeneration !== socketGeneration || sock !== newSock) return;
     // 'append' suele ser historial o mensajes añadidos posteriormente; procesar
     // solo notificaciones nuevas evita ejecutar dos veces comandos/descargas.
     if (update?.type && update.type !== 'notify') return;
     for (const message of update?.messages || []) {
-      console.log('📨 Mensaje recibido:', JSON.stringify({
-        fromMe: Boolean(message?.key?.fromMe),
-        hasText: Boolean(getText(message)),
-        messageType: Object.keys(message?.message || {})[0] || null
-      }));
       try {
         // No bloquear la recepción de mensajes mientras FFmpeg/Sticker Formatter
         // procesa un sticker. Así el bot puede seguir contestando y recibiendo
@@ -2228,24 +2212,15 @@ app.get('/keepalive', (_req, res) => {
   });
 });
 
-app.get('/health', async (_req, res) => {
-  let githubSession = 'sin configurar';
-  let githubReadStatus = null;
-
-  if (sessionSecurityReady()) {
-    try {
-      const check = await githubRequest(
-        'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + ENCRYPTED_SESSION_FILE + '?ref=' + encodeURIComponent(SESSION_BRANCH)
-      );
-      githubReadStatus = check.status;
-      githubSession =
-        check.status === 200 ? 'guardada' :
-        check.status === 404 ? 'no existe' :
-        'error HTTP ' + check.status;
-    } catch (error) {
-      githubSession = 'error: ' + error.message;
-    }
-  }
+app.get('/health', (_req, res) => {
+  // Render consulta este endpoint para saber si el proceso vive. No debe
+  // depender de una petición de red a GitHub en cada comprobación.
+  const githubSession = !sessionSecurityReady()
+    ? 'sin configurar'
+    : restoredSessionSource
+      ? 'restaurada desde ' + restoredSessionBranch + '/' + restoredSessionSource
+      : 'configurada; no verificada en esta consulta';
+  const githubReadStatus = null;
 
   res.status(200).json({
     ok: true,
