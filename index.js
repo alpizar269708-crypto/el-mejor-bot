@@ -1228,7 +1228,24 @@ const MAX_STICKER_CONCURRENCY = Math.max(1, Math.min(3, Number(process.env.MAX_S
 const stickerQueue = [];
 const activeStickerJobs = new Set();
 const activeStickerFfmpeg = new Set();
-let stickerQueueRunning = false;
+const activeStickerProbeProcesses = new Set();
+
+function runStickerProbe(args, options = {}) {
+  return new Promise((resolve, reject) => {
+    let child;
+    child = execFile(ffmpegInstaller.path, args, options, (error, stdout, stderr) => {
+      activeStickerProbeProcesses.delete(child);
+      if (error) {
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+      } else {
+        resolve({ stdout, stderr });
+      }
+    });
+    activeStickerProbeProcesses.add(child);
+  });
+}
 
 function runStickerFfmpeg(command, output, label = 'FFmpeg') {
   return new Promise((resolve, reject) => {
@@ -1348,7 +1365,7 @@ async function detectarDuracionVideoSticker(buffer, duracionDeclarada) {
     await fs.promises.writeFile(input, buffer);
     let diagnostic = '';
     try {
-      const result = await execFileAsync(ffmpegInstaller.path, [
+      const result = await runStickerProbe([
         '-hide_banner',
         '-nostdin',
         '-i', input,
@@ -1506,7 +1523,7 @@ async function createStickerWork(message, sourceMessage, mediaType, signal) {
     let stickerBuffer = null;
     let lastSize = 0;
 
-    for (const quality of [85, 75, 65, 55, 45, 35, 25, 18, 12, 8]) {
+    for (const quality of [80, 65, 50, 35, 20, 10]) {
       const sticker = new Sticker(normalizedImage, {
         pack: 'el mejor bot',
         author: 'el mejor bot',
@@ -1529,7 +1546,7 @@ async function createStickerWork(message, sourceMessage, mediaType, signal) {
     }
 
     if (!stickerBuffer) {
-      throw new Error('La imagen no cabe en el límite de 95 KB para stickers estáticos tras 10 niveles de compresión (último intento: ' + Math.ceil(lastSize / 1024) + ' KB).');
+      throw new Error('La imagen no cabe en el límite de 95 KB para stickers estáticos tras 6 niveles de compresión (último intento: ' + Math.ceil(lastSize / 1024) + ' KB).');
     }
 
     buffer = null;
@@ -1606,6 +1623,9 @@ async function handleMessage(update) {
     let procesosStickerCancelados = 0;
     for (const command of [...activeStickerFfmpeg]) {
       try { command.kill('SIGKILL'); procesosStickerCancelados += 1; } catch {}
+    }
+    for (const proceso of [...activeStickerProbeProcesses]) {
+      try { proceso.kill('SIGKILL'); procesosStickerCancelados += 1; } catch {}
     }
     if (typeof global.gc === 'function') {
       try { global.gc(); } catch (_) {}
