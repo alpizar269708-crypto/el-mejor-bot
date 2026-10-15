@@ -1274,18 +1274,18 @@ async function handleMessage(update) {
     switch (comandoDetectado) {
       case 'menu':
         return await enviarTexto(
-          '🧰 *UTILIDADES DEL BOT*\\n\\n' +
-          '🎨 *sticker* o *S*: crea un sticker de una imagen o video adjunto/citado.\\n' +
-          '♻️ *recup1vez*: recupera una foto de ver una vez al responder a ella.\\n' +
-          '🎵 *tiktok enlace*\\n' +
-          '📸 *instagram enlace*\\n' +
-          '📌 *pinterest enlace*\\n' +
-          '🐦 *x enlace*\\n' +
-          '⬇️ *descargar enlace*: descarga desde otros sitios compatibles.\\n' +
-          '🌐 *traduce idioma texto*\\n' +
-          '🎮 *skin nombre* / *stats jugador*\\n' +
-          '🛒 *contacto*\\n' +
-          '💓 *ping*\\n\\n' +
+          '🧰 *UTILIDADES DEL BOT*\n\n' +
+          '🎨 *sticker* o *S*: crea un sticker de una imagen o video adjunto/citado.\n' +
+          '♻️ *recup1vez*: recupera una foto de ver una vez al responder a ella.\n' +
+          '🎵 *tiktok enlace*\n' +
+          '📸 *instagram enlace*\n' +
+          '📌 *pinterest enlace*\n' +
+          '🐦 *x enlace*\n' +
+          '⬇️ *descargar enlace*: descarga desde otros sitios compatibles.\n' +
+          '🌐 *traduce idioma texto*\n' +
+          '🎮 *skin nombre* / *stats jugador*\n' +
+          '🛒 *contacto*\n' +
+          '💓 *ping*\n\n' +
           'Los comandos aceptan mayúsculas y minúsculas.'
         );
       case 'ping':
