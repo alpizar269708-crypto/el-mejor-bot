@@ -1612,13 +1612,15 @@ async function handleMessage(update) {
       '🧹 *LIBERARCACHE*\n\n' +
       '📥 Descargas pendientes canceladas: ' + descargas.pendientesCancelados + '\n' +
       '🎬 Stickers de video pendientes cancelados: ' + stickersCancelados.length + '\n' +
-      '⏳ Descarga activa: ' + (estado.descargaActiva ? 'sí (' + estado.segundosActiva + ' s)' : 'no') + '\n' +
+      '🛑 Cancelación de descarga activa: ' + (descargas.descargaActivaCancelada ? 'solicitada' : 'no había descarga activa') + '\n' +
+      '⚙️ Procesos de descarga detenidos: ' + (descargas.procesosCancelados || 0) + '\n' +
+      '⏳ Descarga activa al ejecutar comando: ' + (descargas.descargaActiva ? 'sí (' + descargas.segundosActiva + ' s)' : 'no') + '\n' +
       '📦 Descargas pendientes restantes: ' + estado.pendientes + '\n' +
       '🧠 RAM usada: ' + mb(memoria.heapUsed) + ' MB heap; ' + mb(memoria.rss) + ' MB total\n' +
       (typeof global.gc === 'function'
         ? '✅ Recolección de memoria solicitada.'
         : 'ℹ️ La recolección automática de memoria sigue activa; este proceso no permite forzarla.') + '\n\n' +
-      'Nota: no se borra la sesión ni la memoria persistente. Si una descarga activa está bloqueada, tiene un límite de tiempo y no se cancela a la fuerza.',
+      'La cancelación detiene la descarga activa y vacía la cola. No se borra la sesión ni la memoria persistente.',
       message
     );
   }
