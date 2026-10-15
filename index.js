@@ -1501,6 +1501,7 @@ async function createStickerWork(message, sourceMessage, mediaType, signal) {
     // WhatsApp limita los stickers estáticos a 100 KB. Dejar margen evita
     // rechazos al volver a empaquetar/reenviar el sticker.
     const MAX_STATIC_STICKER_BYTES = 95 * 1024;
+    if (signal?.aborted) throw new Error('Solicitud cancelada por liberarcache.');
     // Quitar márgenes transparentes y normalizar todas las imágenes al mismo
     // lienzo con un margen pequeño para evitar que unas se vean diminutas.
     const normalizedImage = await sharp(buffer, { failOn: 'none' })
@@ -1518,10 +1519,12 @@ async function createStickerWork(message, sourceMessage, mediaType, signal) {
       })
       .png()
       .toBuffer();
+    if (signal?.aborted) throw new Error('Solicitud cancelada por liberarcache.');
     let stickerBuffer = null;
     let lastSize = 0;
 
     for (const quality of [80, 65, 50, 35, 20, 10, 8]) {
+      if (signal?.aborted) throw new Error('Solicitud cancelada por liberarcache.');
       const sticker = new Sticker(normalizedImage, {
         pack: 'el mejor bot',
         author: 'el mejor bot',
