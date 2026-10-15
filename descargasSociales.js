@@ -92,8 +92,10 @@ function encolarDescarga(trabajo, onPosition = null) {
   }
   return new Promise((resolve, reject) => {
     colaDescargas.push({ trabajo, resolve, reject, onPosition, ultimaPosicionNotificada: null });
-    notificarPosicionesCola();
+    // Arrancar primero la descarga si no hay otra activa; solo avisar posiciones
+    // a los enlaces que realmente deban esperar turno.
     procesarColaDescargas().catch(error => console.error('Cola de descargas:', error.message));
+    notificarPosicionesCola();
   });
 }
 
