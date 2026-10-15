@@ -36,6 +36,42 @@ const SESSION_FALLBACK_BRANCHES = (process.env.SESSION_FALLBACK_BRANCHES ||
   );
 const SESSION_PASSWORD = process.env.SESSION_PASSWORD;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD?.trim() || SESSION_PASSWORD?.trim() || null;
+
+// Protege las operaciones administrativas con autenticación HTTP Basic.
+// Si no hay contraseña configurada, se deniega el acceso en vez de dejar la ruta abierta.
+function requireAdminAuth(req, res, next) {
+  if (!ADMIN_PASSWORD) {
+    return res.status(503).json({ ok: false, mensaje: 'Acceso administrativo no configurado.' });
+  }
+
+  const authorization = req.get('authorization') || '';
+  const match = authorization.match(/^Basic\s+(.+)$/i);
+  if (!match) {
+    res.set('WWW-Authenticate', 'Basic realm="el-mejor-bot-admin", charset="UTF-8"');
+    return res.status(401).send('Autenticación administrativa requerida.');
+  }
+
+  let suppliedPassword = '';
+  try {
+    const decoded = Buffer.from(match[1], 'base64').toString('utf8');
+    const separator = decoded.indexOf(':');
+    if (separator < 0) throw new Error('Formato Basic inválido');
+    suppliedPassword = decoded.slice(separator + 1);
+  } catch {
+    res.set('WWW-Authenticate', 'Basic realm="el-mejor-bot-admin", charset="UTF-8"');
+    return res.status(401).send('Credenciales inválidas.');
+  }
+
+  const expected = Buffer.from(ADMIN_PASSWORD, 'utf8');
+  const supplied = Buffer.from(suppliedPassword, 'utf8');
+  const valid = expected.length === supplied.length && crypto.timingSafeEqual(expected, supplied);
+  if (!valid) {
+    res.set('WWW-Authenticate', 'Basic realm="el-mejor-bot-admin", charset="UTF-8"');
+    return res.status(401).send('Credenciales inválidas.');
+  }
+
+  return next();
+}
 const ENCRYPTED_SESSION_FILE = 'session.enc';
 const LAST_GOOD_SESSION_FILE = 'session.last-good.enc';
 let restoredSessionSource = null;
