@@ -1645,7 +1645,7 @@ async function handleMessage(update) {
     jid: lastMessageJid,
     fromMe: message.key?.fromMe === true,
     tipo: Object.keys(unwrapMessage(message) || {}).join(',') || 'sin tipo',
-    comando: text.slice(0, 80)
+    comando: explicitCommand ? text.slice(0, 80) : '(mensaje no comando)'
   });
 
   // Registro ligero en memoria: no toca GitHub aquí.
