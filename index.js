@@ -1326,8 +1326,6 @@ function enqueueSticker(task, mediaType = 'image') {
 }
 
 function drainStickerQueue() {
-  if (stickerQueueRunning) return;
-  stickerQueueRunning = true;
   while (stickerQueue.length && activeStickerJobs.size < MAX_STICKER_CONCURRENCY) {
     const job = stickerQueue.shift();
     activeStickerJobs.add(job);
@@ -1337,11 +1335,9 @@ function drainStickerQueue() {
       .then(job.resolve, job.reject)
       .finally(() => {
         activeStickerJobs.delete(job);
-        if (stickerQueue.length) drainStickerQueue();
-        else if (!activeStickerJobs.size) stickerQueueRunning = false;
+        drainStickerQueue();
       });
   }
-  if (!stickerQueue.length && !activeStickerJobs.size) stickerQueueRunning = false;
 }
 
 async function detectarDuracionVideoSticker(buffer, duracionDeclarada) {
