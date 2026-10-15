@@ -1492,24 +1492,13 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma = 'aut
     return;
   }
 
-  const posicion = colaDescargas.length + (descargaActiva ? 1 : 0);
-  await sock.sendMessage(chatId, {
-    text: posicion > 1
-      ? '🕒 Tu descarga quedó en cola. Posición aproximada: ' + posicion + '.'
-      : '⏳ Descargando el mejor video disponible (hasta 100 MB por archivo). Los videos largos pueden tardar varios minutos...'
-  }, { quoted: msg });
-
   try {
     await encolarDescarga(async () => {
       const esInstagram = plataforma === 'instagram' || detectarPlataforma(url) === 'instagram';
       const progress = async (stage, detail) => {
-        if (!esInstagram) return;
-        const message = 'Instagram · ' + stage + '\n' + detail;
-        console.log('[Descarga Instagram] ' + stage + ': ' + detail);
-        await sock.sendMessage(chatId, { text: message }, { quoted: msg });
+        if (esInstagram) console.log('[Descarga Instagram] ' + stage + ': ' + detail);
       };
       const result = await descargarArchivos(url, plataforma, (event) => progress(event.etapa, event.detalle));
-      await progress('Descarga completada', 'Se obtuvieron ' + result.archivos.length + ' archivo(s). Ahora intentaré enviarlos por WhatsApp.');
       try {
         for (let i = 0; i < result.archivos.length; i++) {
           let archivo = result.archivos[i];
@@ -1530,11 +1519,6 @@ async function comandoDescargaSocial(sock, chatId, msg, texto, plataforma = 'aut
           await sock.sendMessage(chatId, payload, { quoted: msg });
         }
 
-        if (result.omittedOversized > 0) {
-          await sock.sendMessage(chatId, {
-            text: 'ℹ️ Se omitieron ' + result.omittedOversized + ' archivo(s) que superaban el límite de 100 MB.'
-          }, { quoted: msg });
-        }
       } finally {
         await result.cleanup().catch(() => {});
       }
