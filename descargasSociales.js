@@ -1367,6 +1367,9 @@ async function descargarArchivos(url, plataforma = 'auto', onProgress = null) {
           cleanup: () => limpiarDirectorio(tempDir)
         };
       } catch (directError) {
+        if (controladorDescargaActiva?.signal.aborted || descargaCancelada) {
+          throw new Error('Descarga cancelada por liberarcache.');
+        }
         console.warn('⚠️ Descarga directa no disponible; se probará yt-dlp:', directError.message);
         await limpiarDirectorio(tempDir);
         await fs.promises.mkdir(tempDir, { recursive: true });
