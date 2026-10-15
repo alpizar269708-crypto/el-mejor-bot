@@ -1382,11 +1382,12 @@ async function detectarDuracionVideoSticker(buffer, duracionDeclarada) {
   }
 }
 
-async function createFastVideoSticker(buffer, duration) {
+async function createFastVideoSticker(buffer, duration, signal) {
   const attempts = buildVideoStickerAttempts(duration);
   let lastError = null;
 
   for (let index = 0; index < attempts.length; index++) {
+    if (signal?.aborted) throw new Error('Solicitud cancelada por liberarcache.');
     const attempt = attempts[index];
     try {
       const result = await createAnimatedWebpSticker(
@@ -1407,6 +1408,7 @@ async function createFastVideoSticker(buffer, duration) {
         ' FPS y calidad ' + attempt.quality + ' (' + (index + 2) + '/' + attempts.length + ').'
       );
     } catch (error) {
+      if (signal?.aborted) throw new Error('Solicitud cancelada por liberarcache.');
       lastError = error;
       console.warn(
         '⚠️ Intento de sticker animado ' + (index + 1) + '/' + attempts.length + ': ' + error.message
@@ -1472,7 +1474,7 @@ async function createStickerWork(message, sourceMessage, mediaType, signal) {
     const videoMessage = unwrapMessage(sourceMessage)?.videoMessage || {};
     const duration = await detectarDuracionVideoSticker(buffer, videoMessage.seconds);
 
-    const stickerBuffer = await createFastVideoSticker(buffer, duration);
+    const stickerBuffer = await createFastVideoSticker(buffer, duration, signal);
     if (signal?.aborted) throw new Error('Solicitud cancelada por liberarcache.');
 
     // Liberar la referencia al video original antes de enviar.
