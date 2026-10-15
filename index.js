@@ -1212,7 +1212,7 @@ async function requestPairingCodeIfNeeded() {
     pairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
     pairingError = null;
     qrDataUrl = null;
-    console.log('\\n🔢 CÓDIGO DE VINCULACIÓN:', pairingCode, '\\n');
+    console.log('\n🔢 CÓDIGO DE VINCULACIÓN:', pairingCode, '\n');
   } catch (error) {
     if (requestGeneration !== socketGeneration || requestSocket !== sock) return;
     pairingRequested = false;
@@ -1558,7 +1558,7 @@ async function createSticker(message, sourceMessage, mediaType) {
 
     await sendText(
       message.key.remoteJid,
-      '❌ No pude crear el sticker.\\n📌 Razón: ' + reason,
+      '❌ No pude crear el sticker.\n📌 Razón: ' + reason,
       message
     ).catch(() => {});
   } finally {
