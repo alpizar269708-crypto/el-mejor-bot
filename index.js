@@ -1223,16 +1223,22 @@ async function requestPairingCodeIfNeeded() {
 
 const FFMPEG_STICKER_TIMEOUT_MS = 90000;
 const MAX_STICKER_QUEUE = 30;
+// Procesar varios stickers a la vez reduce la espera sin saturar la RAM de Render.
+const MAX_STICKER_CONCURRENCY = Math.max(1, Math.min(3, Number(process.env.MAX_STICKER_CONCURRENCY) || 2));
 const stickerQueue = [];
+const activeStickerJobs = new Set();
+const activeStickerFfmpeg = new Set();
 let stickerQueueRunning = false;
 
 function runStickerFfmpeg(command, output, label = 'FFmpeg') {
   return new Promise((resolve, reject) => {
     let finished = false;
+    activeStickerFfmpeg.add(command);
     const finish = error => {
       if (finished) return;
       finished = true;
       clearTimeout(timeout);
+      activeStickerFfmpeg.delete(command);
       if (error) reject(error);
       else resolve();
     };
@@ -1309,32 +1315,33 @@ async function createAnimatedWebpSticker(buffer, duration = 3, fps = 12, quality
   }
 }
 
-function enqueueSticker(task) {
+function enqueueSticker(task, mediaType = 'image') {
   if (stickerQueue.length >= MAX_STICKER_QUEUE) {
     return Promise.reject(new Error('La cola de stickers está llena; vuelve a intentarlo en unos minutos.'));
   }
   return new Promise((resolve, reject) => {
-    stickerQueue.push({ task, resolve, reject });
+    stickerQueue.push({ task, mediaType, resolve, reject, controller: new AbortController() });
     drainStickerQueue();
   });
 }
 
-async function drainStickerQueue() {
+function drainStickerQueue() {
   if (stickerQueueRunning) return;
   stickerQueueRunning = true;
-  try {
-    while (stickerQueue.length) {
-      const job = stickerQueue.shift();
-      console.log('🧰 Procesando sticker. Cola restante:', stickerQueue.length);
-      try {
-        job.resolve(await job.task());
-      } catch (error) {
-        job.reject(error);
-      }
-    }
-  } finally {
-    stickerQueueRunning = false;
+  while (stickerQueue.length && activeStickerJobs.size < MAX_STICKER_CONCURRENCY) {
+    const job = stickerQueue.shift();
+    activeStickerJobs.add(job);
+    console.log('🧰 Procesando sticker ' + job.mediaType + '. Activos: ' + activeStickerJobs.size + '/' + MAX_STICKER_CONCURRENCY + '; pendientes: ' + stickerQueue.length);
+    Promise.resolve()
+      .then(() => job.controller.signal.aborted ? Promise.reject(new Error('Solicitud cancelada por liberarcache.')) : job.task(job.controller.signal))
+      .then(job.resolve, job.reject)
+      .finally(() => {
+        activeStickerJobs.delete(job);
+        if (stickerQueue.length) drainStickerQueue();
+        else if (!activeStickerJobs.size) stickerQueueRunning = false;
+      });
   }
+  if (!stickerQueue.length && !activeStickerJobs.size) stickerQueueRunning = false;
 }
 
 async function detectarDuracionVideoSticker(buffer, duracionDeclarada) {
@@ -1418,7 +1425,7 @@ async function createFastVideoSticker(buffer, duration) {
   );
 }
 
-async function createStickerWork(message, sourceMessage, mediaType) {
+async function createStickerWork(message, sourceMessage, mediaType, signal) {
   const jid = message.key.remoteJid;
   const sourceContent = unwrapMessage(sourceMessage);
   const sourceMetadata = mediaType === 'video'
@@ -1455,6 +1462,7 @@ async function createStickerWork(message, sourceMessage, mediaType) {
       reuploadRequest: sock.updateMediaMessage
     }
   );
+  if (signal?.aborted) throw new Error('Solicitud cancelada por liberarcache.');
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
     throw new Error('WhatsApp no entregó el archivo multimedia completo. Intenta reenviar la imagen o el video.');
   }
@@ -1469,6 +1477,7 @@ async function createStickerWork(message, sourceMessage, mediaType) {
     const duration = await detectarDuracionVideoSticker(buffer, videoMessage.seconds);
 
     const stickerBuffer = await createFastVideoSticker(buffer, duration);
+    if (signal?.aborted) throw new Error('Solicitud cancelada por liberarcache.');
 
     // Liberar la referencia al video original antes de enviar.
     buffer = null;
@@ -1526,6 +1535,7 @@ async function createStickerWork(message, sourceMessage, mediaType) {
     }
 
     buffer = null;
+    if (signal?.aborted) throw new Error('Solicitud cancelada por liberarcache.');
     await sock.sendMessage(jid, { sticker: stickerBuffer }, { quoted: message });
     rememberActivity(jid, 'image');
   }
@@ -1537,14 +1547,10 @@ async function createSticker(message, sourceMessage, mediaType) {
   if (processing.has(id)) return;
   processing.add(id);
 
-  const run = () => createStickerWork(message, sourceMessage, mediaType);
+  const run = signal => createStickerWork(message, sourceMessage, mediaType, signal);
 
   try {
-    if (mediaType === 'video') {
-      await enqueueSticker(run);
-    } else {
-      await enqueueSticker(run);
-    }
+    await enqueueSticker(run, mediaType);
   } catch (error) {
     console.error('Error creando sticker:', error);
 
@@ -1594,7 +1600,14 @@ async function handleMessage(update) {
     const descargas = liberarColaDescargas();
     const stickersCancelados = stickerQueue.splice(0);
     for (const job of stickersCancelados) {
+      job.controller.abort(new Error('Solicitud cancelada por liberarcache.'));
       job.reject(new Error('Solicitud cancelada por liberarcache.'));
+    }
+    const stickersActivosCancelados = activeStickerJobs.size;
+    for (const job of activeStickerJobs) job.controller.abort(new Error('Solicitud cancelada por liberarcache.'));
+    let procesosStickerCancelados = 0;
+    for (const command of [...activeStickerFfmpeg]) {
+      try { command.kill('SIGKILL'); procesosStickerCancelados += 1; } catch {}
     }
     if (typeof global.gc === 'function') {
       try { global.gc(); } catch (_) {}
@@ -1606,16 +1619,19 @@ async function handleMessage(update) {
       message.key.remoteJid,
       '🧹 *LIBERARCACHE*\n\n' +
       '📥 Descargas pendientes canceladas: ' + descargas.pendientesCancelados + '\n' +
-      '🎬 Stickers de video pendientes cancelados: ' + stickersCancelados.length + '\n' +
+      '🎬 Trabajos de stickers pendientes cancelados (imagen/video): ' + stickersCancelados.length + '\n' +
+      '⚡ Trabajos de stickers activos señalados para cancelar: ' + stickersActivosCancelados + '\n' +
+      '🧯 Procesos FFmpeg de stickers detenidos: ' + procesosStickerCancelados + '\n' +
       '🛑 Cancelación de descarga activa: ' + (descargas.descargaActivaCancelada ? 'solicitada' : 'no había descarga activa') + '\n' +
       '⚙️ Procesos de descarga detenidos: ' + (descargas.procesosCancelados || 0) + '\n' +
       '⏳ Descarga activa al ejecutar comando: ' + (descargas.descargaActiva ? 'sí (' + descargas.segundosActiva + ' s)' : 'no') + '\n' +
       '📦 Descargas pendientes restantes: ' + estado.pendientes + '\n' +
+      '🎨 Stickers pendientes restantes: ' + stickerQueue.length + '\n' +
       '🧠 RAM usada: ' + mb(memoria.heapUsed) + ' MB heap; ' + mb(memoria.rss) + ' MB total\n' +
       (typeof global.gc === 'function'
         ? '✅ Recolección de memoria solicitada.'
         : 'ℹ️ La recolección automática de memoria sigue activa; este proceso no permite forzarla.') + '\n\n' +
-      'La cancelación detiene la descarga activa y vacía la cola. No se borra la sesión ni la memoria persistente.',
+      'Se cancelan las colas y se detienen los FFmpeg activos; una descarga multimedia de WhatsApp ya iniciada puede terminar de transferirse antes de descartarse. No se borra la sesión ni la memoria persistente.',
       message
     );
   }
