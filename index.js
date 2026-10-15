@@ -1043,6 +1043,10 @@ async function startSocketAfterWake() {
     if (saved?.registered === true) {
       await startSocket(false);
     }
+  } else {
+    // Si no hay sesión local, inicializar igualmente el socket para preparar
+    // QR/vinculación y no depender de visitar la web o mandar un comando.
+    await startSocket(false);
   }
 }
 
@@ -1221,10 +1225,12 @@ async function requestPairingCodeIfNeeded() {
 
 const FFMPEG_STICKER_TIMEOUT_MS = 90000;
 const MAX_STICKER_QUEUE = 30;
-// Procesar varios stickers a la vez reduce la espera sin saturar la RAM de Render.
-const MAX_STICKER_CONCURRENCY = Math.max(1, Math.min(3, Number(process.env.MAX_STICKER_CONCURRENCY) || 2));
+// Solo los videos compiten por los dos espacios de conversión; las imágenes
+// empiezan inmediatamente y nunca esperan detrás de un video.
+const MAX_STICKER_VIDEO_CONCURRENCY = 2;
 const stickerQueue = [];
 const activeStickerJobs = new Set();
+const activeStickerVideoJobs = new Set();
 const activeStickerFfmpeg = new Set();
 const activeStickerProbeProcesses = new Set();
 
@@ -1331,25 +1337,41 @@ async function createAnimatedWebpSticker(buffer, duration = 3, fps = 12, quality
 }
 
 function enqueueSticker(task, mediaType = 'image') {
-  if (stickerQueue.length >= MAX_STICKER_QUEUE) {
-    return Promise.reject(new Error('La cola de stickers está llena; vuelve a intentarlo en unos minutos.'));
-  }
   return new Promise((resolve, reject) => {
-    stickerQueue.push({ task, mediaType, resolve, reject, controller: new AbortController() });
-    drainStickerQueue();
+    const job = { task, mediaType, resolve, reject, controller: new AbortController() };
+
+    if (mediaType === 'video') {
+      if (stickerQueue.length >= MAX_STICKER_QUEUE) {
+        reject(new Error('La cola de videos está llena; vuelve a intentarlo en unos minutos.'));
+        return;
+      }
+      stickerQueue.push(job);
+      drainStickerQueue();
+      return;
+    }
+
+    // Las imágenes arrancan en el acto, aunque haya dos videos convirtiéndose.
+    activeStickerJobs.add(job);
+    console.log('🖼️ Procesando sticker de imagen sin cola. Videos activos: ' + activeStickerVideoJobs.size + '/2; videos pendientes: ' + stickerQueue.length);
+    Promise.resolve()
+      .then(() => job.controller.signal.aborted ? Promise.reject(new Error('Solicitud cancelada por liberarcache.')) : job.task(job.controller.signal))
+      .then(job.resolve, job.reject)
+      .finally(() => activeStickerJobs.delete(job));
   });
 }
 
 function drainStickerQueue() {
-  while (stickerQueue.length && activeStickerJobs.size < MAX_STICKER_CONCURRENCY) {
+  while (stickerQueue.length && activeStickerVideoJobs.size < MAX_STICKER_VIDEO_CONCURRENCY) {
     const job = stickerQueue.shift();
     activeStickerJobs.add(job);
-    console.log('🧰 Procesando sticker ' + job.mediaType + '. Activos: ' + activeStickerJobs.size + '/' + MAX_STICKER_CONCURRENCY + '; pendientes: ' + stickerQueue.length);
+    activeStickerVideoJobs.add(job);
+    console.log('🎬 Procesando sticker de video. Videos activos: ' + activeStickerVideoJobs.size + '/2; videos pendientes: ' + stickerQueue.length);
     Promise.resolve()
       .then(() => job.controller.signal.aborted ? Promise.reject(new Error('Solicitud cancelada por liberarcache.')) : job.task(job.controller.signal))
       .then(job.resolve, job.reject)
       .finally(() => {
         activeStickerJobs.delete(job);
+        activeStickerVideoJobs.delete(job);
         drainStickerQueue();
       });
   }
@@ -2531,12 +2553,15 @@ app.listen(PORT, () => {
             return;
           }
           // La copia incompleta se conserva aparte y el directorio activo queda
-          // limpio para permitir una nueva vinculación.
+          // limpio. Inicializar el socket ahora para generar el QR sin esperar
+          // a una visita al panel o a que llegue un mensaje.
           connectionState = 'desconectado';
           pairingError = 'La sesión anterior estaba incompleta. La copia local se conservó aparte; genera un nuevo código si necesitas vincular.';
+          await startSocket(false);
         }
       } else {
-        console.log('Esperando QR o código de vinculación.');
+        console.log('No hay sesión local: inicializando WhatsApp automáticamente.');
+        await startSocket(false);
       }
     } catch (error) {
       console.error('❌ Error restaurando sesión inicial:', error.message);
