@@ -18,9 +18,9 @@ jobs:
         with:
           node-version: 24
       - name: Install dependencies
-        # Tests validate source logic; skip third-party postinstall downloads that
-        # depend on GitHub API rate limits (runtime deployment installs normally).
-        run: npm install --no-audit --no-fund --prefer-offline --ignore-scripts
+        env:
+          YOUTUBE_DL_HOST: https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux
+        run: npm install --no-audit --no-fund --prefer-offline
       - name: Check JavaScript syntax
         run: npm run check
       - name: Run tests
