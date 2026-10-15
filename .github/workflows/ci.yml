@@ -18,7 +18,9 @@ jobs:
         with:
           node-version: 24
       - name: Install dependencies
-        run: npm install --no-audit --no-fund --prefer-offline
+        # Tests validate source logic; skip third-party postinstall downloads that
+        # depend on GitHub API rate limits (runtime deployment installs normally).
+        run: npm install --no-audit --no-fund --prefer-offline --ignore-scripts
       - name: Check JavaScript syntax
         run: npm run check
       - name: Run tests
