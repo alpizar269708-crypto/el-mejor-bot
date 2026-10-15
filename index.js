@@ -1628,7 +1628,7 @@ async function handleMessage(update) {
   if (/^(menu|ayuda|help)$/i.test(text)) {
     return sendText(
       message.key.remoteJid,
-      '🤖 *el mejor bot*\n\n📸 Imagen + *sticker*\n🎥 Video + *sticker*\n⬇️ Descarga videos de TikTok, Instagram, YouTube, X, Pinterest, Facebook, Reddit, Threads u otros sitios compatibles. También acepta enlaces directos de video; usa *descargar enlace* para sitios genéricos.\n🧹 *liberarcache* para limpiar colas pendientes y revisar procesos.\n↩️ También puedes responder una imagen o video con *sticker*.',
+      '🤖 *el mejor bot*\n\n📸 Imagen + *sticker*\n🎥 Video + *sticker*\n⬇️ Descarga videos de TikTok, Instagram, YouTube, X, Pinterest, Facebook, Reddit, Threads u otros sitios compatibles. También acepta enlaces directos de imagen o video; usa *descargar enlace* para sitios genéricos.\n🧹 *liberarcache* para limpiar colas pendientes y revisar procesos.\n↩️ También puedes responder una imagen o video con *sticker*.',
       message
     );
   }
