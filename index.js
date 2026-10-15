@@ -6,6 +6,7 @@ const path = require('path');
 const os = require('os');
 const P = require('pino');
 const QRCode = require('qrcode');
+const sharp = require('sharp');
 
 const {
   default: makeWASocket,
@@ -1478,11 +1479,28 @@ async function createStickerWork(message, sourceMessage, mediaType) {
     // WhatsApp limita los stickers estáticos a 100 KB. Dejar margen evita
     // rechazos al volver a empaquetar/reenviar el sticker.
     const MAX_STATIC_STICKER_BYTES = 95 * 1024;
+    // Quitar márgenes transparentes y normalizar todas las imágenes al mismo
+    // lienzo con un margen pequeño para evitar que unas se vean diminutas.
+    const normalizedImage = await sharp(buffer, { failOn: 'none' })
+      .trim({ background: { r: 0, g: 0, b: 0, alpha: 0 }, threshold: 10 })
+      .resize(480, 480, {
+        fit: 'contain',
+        background: { r: 0, g: 0, b: 0, alpha: 0 }
+      })
+      .extend({
+        top: 16,
+        bottom: 16,
+        left: 16,
+        right: 16,
+        background: { r: 0, g: 0, b: 0, alpha: 0 }
+      })
+      .png()
+      .toBuffer();
     let stickerBuffer = null;
     let lastSize = 0;
 
     for (const quality of [85, 75, 65, 55, 45, 35, 25, 18, 12, 8]) {
-      const sticker = new Sticker(buffer, {
+      const sticker = new Sticker(normalizedImage, {
         pack: 'el mejor bot',
         author: 'el mejor bot',
         // Usar el tamaño estándar de WhatsApp; FULL agrega ajuste/espacio que puede hacer que el contenido se vea más pequeño.
