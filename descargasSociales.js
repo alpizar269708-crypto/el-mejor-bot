@@ -447,6 +447,7 @@ async function descargaDirecta(urlInicial, tempDir, index = 1, extraHeaders = {}
     };
   } catch (error) {
     if (destino) await fs.promises.rm(destino, { force: true }).catch(() => {});
+    if (signalActiva?.aborted || descargaCancelada) throw new Error('Descarga cancelada por liberarcache.');
     if (controller.signal.aborted) throw new Error('La descarga directa superó el límite de 30 minutos.');
     throw error;
   } finally {
@@ -1305,6 +1306,12 @@ async function descargarImagenesPinterestConGalleryDl(urlInicial, tempDir) {
 }
 
 async function descargarArchivos(url, plataforma = 'auto', onProgress = null) {
+  const verificarCancelacion = () => {
+    if (controladorDescargaActiva?.signal.aborted || descargaCancelada) {
+      throw new Error('Descarga cancelada por liberarcache.');
+    }
+  };
+  verificarCancelacion();
   const plataformaEfectiva = plataforma === 'auto' ? (detectarPlataforma(url) || 'auto') : plataforma;
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'social-download-'));
   const output = path.join(tempDir, '%(autonumber)03d.%(ext)s');
@@ -1372,6 +1379,9 @@ async function descargarArchivos(url, plataforma = 'auto', onProgress = null) {
       const procesoVideo = registrarProcesoDescarga(youtubedl(parsed.toString(), opcionesVideo, { timeout: TIMEOUT_MS }));
       try { await procesoVideo; } finally { desregistrarProcesoDescarga(procesoVideo); }
     } catch (error) {
+      if (controladorDescargaActiva?.signal.aborted || descargaCancelada) {
+        throw new Error('Descarga cancelada por liberarcache.');
+      }
       errorVideo = error;
       await limpiarDirectorio(tempDir);
       await fs.promises.mkdir(tempDir, { recursive: true });
@@ -1383,11 +1393,15 @@ async function descargarArchivos(url, plataforma = 'auto', onProgress = null) {
     // Un extractor puede identificar el post pero no ofrecer la selección de
     // video deseada (o devolver un carrusel de imágenes); reintentar sin format.
     if (!archivos.length) {
+      verificarCancelacion();
       await reportarProgreso(onProgress, 'yt-dlp 2/2', 'El primer intento no dejó archivos; probando sin filtro de formato.');
       try {
         const procesoBase = registrarProcesoDescarga(youtubedl(parsed.toString(), opcionesBase, { timeout: TIMEOUT_MS }));
         try { await procesoBase; } finally { desregistrarProcesoDescarga(procesoBase); }
       } catch (errorBase) {
+        if (controladorDescargaActiva?.signal.aborted || descargaCancelada) {
+          throw new Error('Descarga cancelada por liberarcache.');
+        }
         errorVideo = errorBase || errorVideo;
       }
       archivos = await listarArchivosMedia(tempDir);
@@ -1396,6 +1410,7 @@ async function descargarArchivos(url, plataforma = 'auto', onProgress = null) {
 
     // Fallback directo solo para enlaces genéricos que respondan video/*.
     if (!archivos.length) {
+      verificarCancelacion();
       await limpiarDirectorio(tempDir);
       await fs.promises.mkdir(tempDir, { recursive: true });
       try {
