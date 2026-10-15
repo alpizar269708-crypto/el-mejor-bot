@@ -1094,6 +1094,12 @@ let lastMessageReceivedAt = null;
 let lastMessageProcessedAt = null;
 let lastMessageChatType = null;
 let lastMessageJid = null;
+let lastUpsertAt = null;
+let lastUpsertType = null;
+let lastUpsertMessageCount = 0;
+let lastUpsertGroupCount = 0;
+let lastMessageProcessingError = null;
+let lastSendError = null;
 
 function getText(message) {
   const m = unwrapMessage(message);
@@ -1147,7 +1153,25 @@ function isStickerCommand(text) {
 }
 
 async function sendText(jid, text, quoted) {
-  return sock.sendMessage(jid, { text }, quoted ? { quoted } : undefined);
+  const activeSocket = sock;
+  if (!activeSocket || connectionState !== 'conectado') {
+    const error = new Error('WhatsApp no está conectado; no se pudo enviar la respuesta.');
+    lastSendError = { at: new Date().toISOString(), chatType: String(jid || '').endsWith('@g.us') ? 'grupo' : 'privado', message: error.message };
+    throw error;
+  }
+  try {
+    const result = await activeSocket.sendMessage(jid, { text }, quoted ? { quoted } : undefined);
+    lastSendError = null;
+    return result;
+  } catch (error) {
+    lastSendError = {
+      at: new Date().toISOString(),
+      chatType: String(jid || '').endsWith('@g.us') ? 'grupo' : 'privado',
+      message: String(error?.message || error).slice(0, 300)
+    };
+    console.error('❌ Error enviando respuesta (' + lastSendError.chatType + '):', lastSendError.message);
+    throw error;
+  }
 }
 
 function normalizePhoneNumber(value) {
@@ -1896,6 +1920,25 @@ async function startSocketInternal(restoreSession = true) {
 
   newSock.ev.on('messages.upsert', async update => {
     if (myGeneration !== socketGeneration || sock !== newSock) return;
+
+    // Registrar el evento antes de filtrar historial para saber si WhatsApp
+    // está entregando mensajes de grupo a este proceso.
+    const upsertMessages = Array.isArray(update?.messages) ? update.messages : [];
+    const groupMessages = upsertMessages.filter(message =>
+      String(message?.key?.remoteJid || '').endsWith('@g.us')
+    ).length;
+    lastUpsertAt = new Date().toISOString();
+    lastUpsertType = update?.type || null;
+    lastUpsertMessageCount = upsertMessages.length;
+    lastUpsertGroupCount = groupMessages;
+    if (groupMessages > 0) {
+      console.log('📨 Evento messages.upsert con mensajes de grupo:', {
+        type: lastUpsertType,
+        count: upsertMessages.length,
+        groups: groupMessages
+      });
+    }
+
     // 'append' suele ser historial o mensajes añadidos posteriormente; procesar
     // solo notificaciones nuevas evita ejecutar dos veces comandos/descargas.
     if (update?.type && update.type !== 'notify') return;
@@ -1905,9 +1948,13 @@ async function startSocketInternal(restoreSession = true) {
         // procesa un sticker. Así el bot puede seguir contestando y recibiendo
         // mensajes aunque un video tarde en convertirse.
         handleMessage({ type: update?.type, messages: [message] }).catch(error => {
+          lastMessageProcessingError = {
+            at: new Date().toISOString(),
+            chatType: String(message.key?.remoteJid || '').endsWith('@g.us') ? 'grupo' : 'privado',
+            message: String(error?.message || error).slice(0, 300)
+          };
           console.error('❌ Error procesando mensaje (' +
-            (String(message.key?.remoteJid || '').endsWith('@g.us') ? 'grupo' : 'privado') +
-            ', jid=' + (message.key?.remoteJid || 'desconocido') + '):', error);
+            lastMessageProcessingError.chatType + '):', lastMessageProcessingError.message);
         });
       } catch (error) {
         console.error('Error iniciando procesamiento del mensaje:', error);
@@ -2364,7 +2411,12 @@ app.get('/health', (_req, res) => {
     ultimoMensajeRecibido: lastMessageReceivedAt,
     ultimoMensajeProcesado: lastMessageProcessedAt,
     ultimoChatTipo: lastMessageChatType,
-    ultimoChatJid: lastMessageJid,
+    ultimoEventoUpsert: lastUpsertAt,
+    ultimoTipoUpsert: lastUpsertType,
+    mensajesUltimoUpsert: lastUpsertMessageCount,
+    gruposUltimoUpsert: lastUpsertGroupCount,
+    ultimoErrorProcesamientoMensaje: lastMessageProcessingError,
+    ultimoErrorEnvioRespuesta: lastSendError,
     ultimaDesconexion: lastDisconnectAt,
     ultimoCodigoDesconexion: lastDisconnectCode,
     ultimoMotivoDesconexion: lastDisconnectReason,
