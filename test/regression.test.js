@@ -590,7 +590,7 @@ test('wa-sticker-formatter crea un WebP estático válido y menor a 95 KB', asyn
     const candidate = await new Sticker(source, {
       pack: 'el mejor bot',
       author: 'el mejor bot',
-      type: StickerTypes.FULL,
+      type: StickerTypes.DEFAULT,
       quality
     }).toBuffer();
     const inspection = inspectWebpAnimation(candidate);
