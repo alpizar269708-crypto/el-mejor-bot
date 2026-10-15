@@ -3,30 +3,20 @@ require('dotenv').config();
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const P = require('pino');
 const QRCode = require('qrcode');
-const sharp = require('sharp');
 
 const {
   default: makeWASocket,
   DisconnectReason,
   useMultiFileAuthState,
   Browsers,
-  downloadMediaMessage
 } = require('@whiskeysockets/baileys');
 
-const { Sticker, StickerTypes } = require('wa-sticker-formatter');
-const { inspectWebpAnimation, parseMediaSizeBytes, resolveStickerDurationSeconds, buildVideoStickerAttempts, MAX_ANIMATED_STICKER_BYTES } = require('./stickerUtils');
 const { validateSessionSnapshot } = require('./sessionUtils');
+const utilidades = require('./comandos/utilidades');
 
 const crypto = require('crypto');
-const { execFile } = require('child_process');
-
-const ffmpeg = require('fluent-ffmpeg');
-const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
-const { comandoDescargaSocial, extraerUrl, analizarSolicitudDescarga, detectarPlataforma, MAX_MEDIA_BYTES, liberarColaDescargas, estadoColaDescargas } = require('./descargasSociales');
-ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN?.trim();
 const GITHUB_REPO = process.env.GITHUB_REPO || 'alpizar269708-crypto/el-mejor-bot';
@@ -1126,538 +1116,105 @@ function unwrapMessage(message) {
   return m;
 }
 
-function findMedia(message) {
-  const m = unwrapMessage(message);
-  if (!m) return null;
-
-  if (m.imageMessage) return { type: 'image' };
-  if (m.videoMessage) return { type: 'video' };
-  return null;
+function normalizarTextoComando(texto) {
+  return String(texto || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
 }
 
-function getQuotedMessage(message) {
-  const m = unwrapMessage(message);
-  const ctx = m?.extendedTextMessage?.contextInfo;
-  return ctx?.quotedMessage ? {
-    key: {
-      remoteJid: message.key.remoteJid,
-      id: ctx.stanzaId,
-      participant: ctx.participant
-    },
-    message: ctx.quotedMessage
-  } : null;
-}
-
-function normalizarComando(text) {
-  return String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+function normalizarComando(texto) {
+  return normalizarTextoComando(texto)
+    .split(/\s+/)[0]
+    .replace(/^[!/.#]+/, '');
 }
 
 function distanciaEdicion(a, b) {
-  if (Math.abs(a.length - b.length) > 2) return 3;
-  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  if (Math.abs(a.length - b.length) > 2) return 99;
+  let anterior = Array.from({ length: b.length + 1 }, (_, i) => i);
   for (let i = 1; i <= a.length; i++) {
-    const current = [i];
+    const actual = [i];
     for (let j = 1; j <= b.length; j++) {
-      current[j] = Math.min(current[j - 1] + 1, previous[j] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
-    }
-    previous = current;
-  }
-  return previous[b.length];
-}
-
-function coincideComando(text, esperado) {
-  const recibido = normalizarComando(text);
-  if (recibido === esperado) return true;
-  const limite = esperado.length >= 4 ? 2 : 0;
-  return distanciaEdicion(recibido, esperado) <= limite;
-}
-
-function isStickerCommand(text) {
-  return ['sticker', 'stikers', 'stickers', 'stiker', 's', 'st'].some(cmd => coincideComando(text, cmd));
-}
-
-async function sendText(jid, text, quoted) {
-  const activeSocket = sock;
-  if (!activeSocket || connectionState !== 'conectado') {
-    const error = new Error('WhatsApp no está conectado; no se pudo enviar la respuesta.');
-    lastSendError = { at: new Date().toISOString(), chatType: String(jid || '').endsWith('@g.us') ? 'grupo' : 'privado', message: error.message };
-    throw error;
-  }
-  try {
-    const result = await activeSocket.sendMessage(jid, { text }, quoted ? { quoted } : undefined);
-    lastSendError = null;
-    return result;
-  } catch (error) {
-    lastSendError = {
-      at: new Date().toISOString(),
-      chatType: String(jid || '').endsWith('@g.us') ? 'grupo' : 'privado',
-      message: String(error?.message || error).slice(0, 300)
-    };
-    console.error('❌ Error enviando respuesta (' + lastSendError.chatType + '):', lastSendError.message);
-    throw error;
-  }
-}
-
-function normalizePhoneNumber(value) {
-  return String(value || '').replace(/\D/g, '');
-}
-
-function serializeAuthTransition(action) {
-  const operation = authTransitionTail.then(action, action);
-  authTransitionTail = operation.catch(error => {
-    console.error('❌ Falló una transición de autenticación:', error?.message || error);
-  });
-  return operation;
-}
-
-function requireAdminAuth(req, res, next) {
-  if (!ADMIN_PASSWORD) {
-    console.error('⚠️ Panel de administración bloqueado: configura ADMIN_PASSWORD en el entorno de ejecución.');
-    return res.status(503).type('text/plain').send(
-      'Panel de vinculación desactivado. Configura ADMIN_PASSWORD en el entorno de ejecución y vuelve a abrir esta página.'
-    );
-  }
-
-  const authorization = String(req.headers.authorization || '');
-  const match = authorization.match(/^Basic\s+(.+)$/i);
-  if (!match) {
-    res.set('WWW-Authenticate', 'Basic realm="el-mejor-bot", charset="UTF-8"');
-    return res.status(401).type('text/plain').send('Autenticación requerida para administrar WhatsApp.');
-  }
-
-  let decoded = '';
-  try {
-    decoded = Buffer.from(match[1], 'base64').toString('utf8');
-  } catch {}
-
-  const separator = decoded.indexOf(':');
-  const username = separator >= 0 ? decoded.slice(0, separator) : '';
-  const supplied = Buffer.from(separator >= 0 ? decoded.slice(separator + 1) : '');
-  const expected = Buffer.from(ADMIN_PASSWORD);
-  const passwordMatches = supplied.length === expected.length &&
-    crypto.timingSafeEqual(supplied, expected);
-
-  if (username !== 'admin' || !passwordMatches) {
-    res.set('WWW-Authenticate', 'Basic realm="el-mejor-bot", charset="UTF-8"');
-    return res.status(401).type('text/plain').send('Usuario o contraseña incorrectos.');
-  }
-
-  return next();
-}
-
-async function requestPairingCodeIfNeeded() {
-  if (!sock || !pairingNumber || pairingRequested) return;
-  if (authState?.state?.creds?.registered) return;
-
-  const requestSocket = sock;
-  const requestGeneration = socketGeneration;
-  const requestNumber = pairingNumber;
-  pairingRequested = true;
-
-  try {
-    const code = await requestSocket.requestPairingCode(requestNumber);
-    if (
-      requestSocket !== sock ||
-      requestGeneration !== socketGeneration ||
-      requestNumber !== pairingNumber
-    ) return;
-
-    pairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
-    pairingError = null;
-    qrDataUrl = null;
-    console.log('\n🔢 CÓDIGO DE VINCULACIÓN:', pairingCode, '\n');
-  } catch (error) {
-    if (requestGeneration !== socketGeneration || requestSocket !== sock) return;
-    pairingRequested = false;
-    pairingError = error?.message || 'No se pudo generar el código.';
-    console.error('❌ Error generando código de vinculación:', pairingError);
-  }
-}
-
-const FFMPEG_STICKER_TIMEOUT_MS = 90000;
-const MAX_STICKER_QUEUE = 30;
-// Solo los videos compiten por los dos espacios de conversión; las imágenes
-// empiezan inmediatamente y nunca esperan detrás de un video.
-const MAX_STICKER_VIDEO_CONCURRENCY = 1;
-const stickerQueue = [];
-const activeStickerJobs = new Set();
-const activeStickerVideoJobs = new Set();
-const activeStickerFfmpeg = new Set();
-const activeStickerProbeProcesses = new Set();
-
-function runStickerProbe(args, options = {}) {
-  return new Promise((resolve, reject) => {
-    let child;
-    child = execFile(ffmpegInstaller.path, args, options, (error, stdout, stderr) => {
-      activeStickerProbeProcesses.delete(child);
-      if (error) {
-        error.stdout = stdout;
-        error.stderr = stderr;
-        reject(error);
-      } else {
-        resolve({ stdout, stderr });
-      }
-    });
-    activeStickerProbeProcesses.add(child);
-  });
-}
-
-function runStickerFfmpeg(command, output, label = 'FFmpeg') {
-  return new Promise((resolve, reject) => {
-    let finished = false;
-    activeStickerFfmpeg.add(command);
-    const finish = error => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timeout);
-      activeStickerFfmpeg.delete(command);
-      if (error) reject(error);
-      else resolve();
-    };
-
-    const timeout = setTimeout(() => {
-      console.error('⏱️ ' + label + ' excedió el límite de procesamiento.');
-      try { command.kill('SIGKILL'); } catch {}
-      finish(new Error('La conversión del video superó el límite de 90 segundos.'));
-    }, FFMPEG_STICKER_TIMEOUT_MS);
-
-    command
-      .on('end', () => finish())
-      .on('error', error => finish(error))
-      .save(output);
-  });
-}
-
-async function createAnimatedWebpSticker(buffer, duration = 3, fps = 12, quality = 55, contentSize = 512) {
-  const actualDuration = Math.min(Math.max(Number(duration) || 3, 0.1), 10);
-  const actualFps = Math.min(Math.max(Number(fps) || 12, 1), 15);
-  const actualQuality = Math.min(Math.max(Number(quality) || 55, 10), 80);
-  const actualContentSize = Math.min(Math.max(Math.round((Number(contentSize) || 512) / 2) * 2, 320), 512);
-  const videoFilters = [
-    'fps=' + actualFps,
-    'scale=' + actualContentSize + ':' + actualContentSize + ':force_original_aspect_ratio=increase:flags=bicubic',
-    'crop=' + actualContentSize + ':' + actualContentSize + ':(iw-' + actualContentSize + ')/2:(ih-' + actualContentSize + ')/2'
-  ];
-  if (actualContentSize < 512) {
-    // Mantener lienzo 512x512 requerido por WhatsApp, reduciendo el área útil
-    // para ahorrar bytes sin bajar tanto los FPS. El borde añadido es transparente.
-    videoFilters.push('format=rgba');
-    videoFilters.push('pad=512:512:(ow-iw)/2:(oh-ih)/2:color=black@0');
-    videoFilters.push('format=yuva420p');
-  }
-  videoFilters.push('setsar=1');
-  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-sticker-'));
-  const input = path.join(tempDir, 'input');
-  const output = path.join(tempDir, 'sticker.webp');
-
-  try {
-    await fs.promises.writeFile(input, buffer);
-    const command = ffmpeg(input)
-      .videoFilters(videoFilters)
-      .outputOptions([
-        '-t ' + actualDuration,
-        '-an',
-        '-c:v libwebp_anim',
-        '-lossless 0',
-        '-q:v ' + actualQuality,
-        '-compression_level 6',
-        '-loop 0',
-        '-preset picture',
-        '-threads 1'
-      ]);
-
-    await runStickerFfmpeg(command, output, 'FFmpeg sticker animado');
-    const result = await fs.promises.readFile(output);
-    const inspection = inspectWebpAnimation(result);
-    if (!inspection.valid || !inspection.animated) {
-      throw new Error(
-        'FFmpeg produjo un WebP inválido o estático (' +
-        (inspection.reason || inspection.frameCount + ' fotogramas') +
-        '). Se probará una conversión alternativa.'
+      actual[j] = Math.min(
+        actual[j - 1] + 1,
+        anterior[j] + 1,
+        anterior[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
       );
     }
-
-    console.log(
-      '🎞️ WebP animado validado: ' + inspection.frameCount + ' fotogramas, ' +
-      Math.round(result.length / 1024 * 10) / 10 + ' KB, ' + actualFps + ' FPS.'
-    );
-    return result;
-  } finally {
-    await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    anterior = actual;
   }
+  return anterior[b.length];
 }
 
-function enqueueSticker(task, mediaType = 'image') {
-  return new Promise((resolve, reject) => {
-    const job = { task, mediaType, resolve, reject, controller: new AbortController() };
+const ALIAS_UTILIDADES = new Map([
+  ['menu', 'menu'], ['ayuda', 'menu'], ['help', 'menu'],
+  ['ping', 'ping'],
+  ['s', 'sticker'], ['st', 'sticker'], ['sticker', 'sticker'],
+  ['stiker', 'sticker'], ['stikers', 'sticker'], ['stickers', 'sticker'],
+  ['recup1vez', 'recup1vez'],
+  ['tiktok', 'tiktok'], ['instagram', 'instagram'],
+  ['pinterest', 'pinterest'], ['x', 'x'], ['twitter', 'x'],
+  ['youtube', 'youtube'], ['facebook', 'facebook'],
+  ['reddit', 'reddit'], ['threads', 'threads'],
+  ['descargar', 'descargar'], ['descarga', 'descargar'], ['download', 'descargar'],
+  ['traduce', 'traduce'], ['skin', 'skin'], ['stats', 'stats'],
+  ['contacto', 'contacto']
+]);
 
-    if (mediaType === 'video') {
-      if (stickerQueue.length >= MAX_STICKER_QUEUE) {
-        reject(new Error('La cola de videos está llena; vuelve a intentarlo en unos minutos.'));
-        return;
-      }
-      stickerQueue.push(job);
-      drainStickerQueue();
-      return;
+function resolverComandoUtilidad(texto) {
+  const palabra = normalizarComando(texto);
+  if (!palabra) return null;
+  if (ALIAS_UTILIDADES.has(palabra)) return ALIAS_UTILIDADES.get(palabra);
+
+  let mejor = null;
+  let mejorDistancia = Infinity;
+  let empate = false;
+  for (const [alias, comando] of ALIAS_UTILIDADES) {
+    if (alias.length < 4) continue;
+    const limite = alias.length >= 6 ? 2 : 1;
+    const distancia = distanciaEdicion(palabra, alias);
+    if (distancia > limite) continue;
+    if (distancia < mejorDistancia) {
+      mejor = comando;
+      mejorDistancia = distancia;
+      empate = false;
+    } else if (distancia === mejorDistancia && mejor !== comando) {
+      empate = true;
     }
-
-    // Las imágenes arrancan en el acto, aunque haya dos videos convirtiéndose.
-    activeStickerJobs.add(job);
-    console.log('🖼️ Procesando sticker de imagen sin cola. Videos activos: ' + activeStickerVideoJobs.size + '/1; videos pendientes: ' + stickerQueue.length);
-    Promise.resolve()
-      .then(() => job.controller.signal.aborted ? Promise.reject(new Error('Solicitud cancelada por liberarcache.')) : job.task(job.controller.signal))
-      .then(job.resolve, job.reject)
-      .finally(() => activeStickerJobs.delete(job));
-  });
-}
-
-function drainStickerQueue() {
-  while (stickerQueue.length && activeStickerVideoJobs.size < MAX_STICKER_VIDEO_CONCURRENCY) {
-    const job = stickerQueue.shift();
-    activeStickerJobs.add(job);
-    activeStickerVideoJobs.add(job);
-    console.log('🎬 Procesando sticker de video. Videos activos: ' + activeStickerVideoJobs.size + '/1; videos pendientes: ' + stickerQueue.length);
-    Promise.resolve()
-      .then(() => job.controller.signal.aborted ? Promise.reject(new Error('Solicitud cancelada por liberarcache.')) : job.task(job.controller.signal))
-      .then(job.resolve, job.reject)
-      .finally(() => {
-        activeStickerJobs.delete(job);
-        activeStickerVideoJobs.delete(job);
-        drainStickerQueue();
-      });
   }
+  return empate ? null : mejor;
 }
 
-async function detectarDuracionVideoSticker(buffer, duracionDeclarada) {
-  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'el-mejor-bot-probe-'));
-  const input = path.join(tempDir, 'video-original.mp4');
-
+function obtenerUrlSola(texto) {
+  let valor = String(texto || '').trim();
+  valor = valor.replace(/^\[|\]$/g, '');
+  const coincide = valor.match(/^(?:https?:\/\/)?(?:www\.)?[\w.-]+\.[a-z]{2,}(?::\d+)?(?:\/[^\s]*)?$/i);
+  if (!coincide) return null;
+  if (!/^https?:\/\//i.test(valor)) valor = 'https://' + valor;
   try {
-    await fs.promises.writeFile(input, buffer);
-    let diagnostic = '';
-    try {
-      const result = await runStickerProbe([
-        '-hide_banner',
-        '-nostdin',
-        '-i', input,
-        '-frames:v', '1',
-        '-f', 'null',
-        '-'
-      ], {
-        timeout: 12000,
-        maxBuffer: 1024 * 1024,
-        windowsHide: true
-      });
-      diagnostic = String(result?.stderr || '') + '\n' + String(result?.stdout || '');
-    } catch (error) {
-      // FFmpeg suele devolver código distinto de cero si solo se le pide inspeccionar;
-      // su diagnóstico de entrada sigue conteniendo la duración cuando está disponible.
-      diagnostic = String(error?.stderr || '') + '\n' + String(error?.stdout || '') + '\n' + String(error?.message || '');
-    }
-
-    const duration = resolveStickerDurationSeconds(diagnostic, duracionDeclarada, 3);
-    console.log(
-      '⏱️ Duración detectada del video: ' + duration.toFixed(2) +
-      ' s' + (Number(duracionDeclarada) > 0 ? ' (WhatsApp indica ' + Number(duracionDeclarada).toFixed(2) + ' s).' : '.')
-    );
-    return duration;
-  } catch (error) {
-    const fallback = resolveStickerDurationSeconds('', duracionDeclarada, 3);
-    console.warn('⚠️ No se pudo leer la duración exacta del video; se usará ' + fallback.toFixed(2) + ' s.');
-    return fallback;
-  } finally {
-    await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    const url = new URL(valor);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : null;
+  } catch {
+    return null;
   }
 }
 
-async function createFastVideoSticker(buffer, duration, signal) {
-  const attempts = buildVideoStickerAttempts(duration);
-  let lastError = null;
-
-  for (let index = 0; index < attempts.length; index++) {
-    if (signal?.aborted) throw new Error('Solicitud cancelada por liberarcache.');
-    const attempt = attempts[index];
-    try {
-      const result = await createAnimatedWebpSticker(
-        buffer,
-        attempt.duration,
-        attempt.fps,
-        attempt.quality,
-        attempt.size
-      );
-
-      if (result.length <= MAX_ANIMATED_STICKER_BYTES) return result;
-      lastError = new Error(
-        'El WebP animado pesa ' + Math.ceil(result.length / 1024) +
-        ' KB (límite interno: ' + Math.floor(MAX_ANIMATED_STICKER_BYTES / 1024) + ' KB).'
-      );
-      console.warn(
-        '⚠️ Sticker demasiado pesado; reintentando con ' + attempt.fps +
-        ' FPS y calidad ' + attempt.quality + ' (' + (index + 2) + '/' + attempts.length + ').'
-      );
-    } catch (error) {
-      if (signal?.aborted) throw new Error('Solicitud cancelada por liberarcache.');
-      lastError = error;
-      console.warn(
-        '⚠️ Intento de sticker animado ' + (index + 1) + '/' + attempts.length + ': ' + error.message
-      );
-    }
-  }
-
-  throw new Error(
-    'No se pudo generar un sticker animado fluido dentro de ' +
-    Math.floor(MAX_ANIMATED_STICKER_BYTES / 1024) + ' KB tras ' + attempts.length + ' intentos. ' +
-    (lastError?.message || 'Error de conversión desconocido.')
-  );
-}
-
-async function createStickerWork(message, sourceMessage, mediaType, signal) {
-  const jid = message.key.remoteJid;
-  const sourceContent = unwrapMessage(sourceMessage);
-  const sourceMetadata = mediaType === 'video'
-    ? sourceContent?.videoMessage
-    : sourceContent?.imageMessage;
-  const declaredBytes = parseMediaSizeBytes(sourceMetadata?.fileLength);
-
-  // Rechazar videos/fotos enormes antes de bajarlos enteros a RAM para generar
-  // un sticker pequeño. Para archivos grandes se debe usar "descargar enlace".
-  if (declaredBytes !== null && declaredBytes > MAX_MEDIA_BYTES) {
-    throw new Error('El archivo original supera 100 MB; no cabe en memoria como sticker. Para archivos grandes usa el comando descargar con el enlace.');
-  }
-
-  // En vez de reacciones, avisar directamente sobre el mensaje que se
-  // convertirá en sticker para que quede claro qué está procesando.
+function detectarComandoPorUrl(urlTexto) {
+  if (!urlTexto) return null;
   try {
-    await sock.sendMessage(
-      jid,
-      { text: mediaType === 'video'
-        ? '🎥 Voy a empezar a hacer tu sticker. ⏳ Espera un momento...'
-        : '⏳ Voy a empezar a hacer tu sticker. Espera un momento...' },
-      { quoted: sourceMessage }
-    );
-  } catch (ackError) {
-    console.error('⚠️ No se pudo enviar el aviso inicial; continuaré con el sticker:', ackError.message);
-  }
-
-  let buffer = await downloadMediaMessage(
-    sourceMessage,
-    'buffer',
-    {},
-    {
-      logger: P({ level: 'silent' }),
-      reuploadRequest: sock.updateMediaMessage
-    }
-  );
-  if (signal?.aborted) throw new Error('Solicitud cancelada por liberarcache.');
-  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
-    throw new Error('WhatsApp no entregó el archivo multimedia completo. Intenta reenviar la imagen o el video.');
-  }
-  if (buffer.length > MAX_MEDIA_BYTES) {
-    const sizeBytes = buffer.length;
-    buffer = null;
-    throw new Error('El archivo descargado pesa ' + (sizeBytes / 1_000_000).toFixed(1) + ' MB y supera el límite de 100 MB para crear un sticker. Para videos grandes usa descargar con el enlace.');
-  }
-
-  if (mediaType === 'video') {
-    const videoMessage = unwrapMessage(sourceMessage)?.videoMessage || {};
-    const duration = await detectarDuracionVideoSticker(buffer, videoMessage.seconds);
-
-    const stickerBuffer = await createFastVideoSticker(buffer, duration, signal);
-    if (signal?.aborted) throw new Error('Solicitud cancelada por liberarcache.');
-
-    // Liberar la referencia al video original antes de enviar.
-    buffer = null;
-
-    await sock.sendMessage(jid, { sticker: stickerBuffer }, { quoted: message });
-    rememberActivity(jid, 'video');
-  } else {
-    // WhatsApp limita los stickers estáticos a 100 KB. Dejar margen evita
-    // rechazos al volver a empaquetar/reenviar el sticker.
-    const MAX_STATIC_STICKER_BYTES = 95 * 1024;
-    if (signal?.aborted) throw new Error('Solicitud cancelada por liberarcache.');
-    // Quitar márgenes transparentes y normalizar todas las imágenes al mismo
-    // lienzo con un margen pequeño para evitar que unas se vean diminutas.
-    const normalizedImage = await sharp(buffer, { failOn: 'none' })
-      .trim({ background: { r: 0, g: 0, b: 0, alpha: 0 }, threshold: 10 })
-      .resize(480, 480, {
-        fit: 'contain',
-        background: { r: 0, g: 0, b: 0, alpha: 0 }
-      })
-      .extend({
-        top: 16,
-        bottom: 16,
-        left: 16,
-        right: 16,
-        background: { r: 0, g: 0, b: 0, alpha: 0 }
-      })
-      .png()
-      .toBuffer();
-    if (signal?.aborted) throw new Error('Solicitud cancelada por liberarcache.');
-    let stickerBuffer = null;
-    let lastSize = 0;
-
-    for (const quality of [80, 65, 50, 35, 20, 10, 8]) {
-      if (signal?.aborted) throw new Error('Solicitud cancelada por liberarcache.');
-      const sticker = new Sticker(normalizedImage, {
-        pack: 'el mejor bot',
-        author: 'el mejor bot',
-        // Usar el tamaño estándar de WhatsApp; FULL agrega ajuste/espacio que puede hacer que el contenido se vea más pequeño.
-        type: StickerTypes.DEFAULT,
-        quality
-      });
-      const candidate = await sticker.toBuffer();
-      const inspection = inspectWebpAnimation(candidate);
-
-      if (!inspection.valid || inspection.animated) {
-        throw new Error('La imagen no se convirtió en un WebP estático válido.');
-      }
-      lastSize = candidate.length;
-      if (candidate.length <= MAX_STATIC_STICKER_BYTES) {
-        stickerBuffer = candidate;
-        break;
-      }
-      console.warn('⚠️ Sticker estático supera el límite; bajando calidad (' + Math.ceil(candidate.length / 1024) + ' KB).');
-    }
-
-    if (!stickerBuffer) {
-      throw new Error('La imagen no cabe en el límite de 95 KB para stickers estáticos tras 7 niveles de compresión (último intento: ' + Math.ceil(lastSize / 1024) + ' KB).');
-    }
-
-    buffer = null;
-    if (signal?.aborted) throw new Error('Solicitud cancelada por liberarcache.');
-    await sock.sendMessage(jid, { sticker: stickerBuffer }, { quoted: message });
-    rememberActivity(jid, 'image');
-  }
-
-}
-
-async function createSticker(message, sourceMessage, mediaType) {
-  const id = message.key.id;
-  if (processing.has(id)) return;
-  processing.add(id);
-
-  const run = signal => createStickerWork(message, sourceMessage, mediaType, signal);
-
-  try {
-    await enqueueSticker(run, mediaType);
-  } catch (error) {
-    console.error('Error creando sticker:', error);
-
-    let reason = error?.message || error?.toString?.() || 'Error desconocido';
-    reason = reason
-      .replace(/\s+/g, ' ')
-      .replace(/^Error:\s*/i, '')
-      .trim();
-
-    if (reason.length > 220) reason = reason.slice(0, 217) + '...';
-
-    await sendText(
-      message.key.remoteJid,
-      '❌ No pude crear el sticker.\n📌 Razón: ' + reason,
-      message
-    ).catch(() => {});
-  } finally {
-    processing.delete(id);
+    const host = new URL(urlTexto).hostname.toLowerCase().replace(/^www\./, '');
+    if (/(^|\.)tiktok\.com$/.test(host)) return 'tiktok';
+    if (/(^|\.)instagram\.com$/.test(host)) return 'instagram';
+    if (/(^|\.)pinterest\./.test(host) || host === 'pin.it') return 'pinterest';
+    if (host === 'x.com' || host.endsWith('.x.com') || host === 'twitter.com' || host.endsWith('.twitter.com')) return 'x';
+    if (host === 'youtube.com' || host.endsWith('.youtube.com') || host === 'youtu.be') return 'youtube';
+    if (host === 'facebook.com' || host.endsWith('.facebook.com') || host === 'fb.watch') return 'facebook';
+    if (host === 'reddit.com' || host.endsWith('.reddit.com') || host === 'redd.it') return 'reddit';
+    if (host === 'threads.net' || host.endsWith('.threads.net')) return 'threads';
+    return 'descargar';
+  } catch {
+    return null;
   }
 }
 
@@ -1666,14 +1223,12 @@ async function handleMessage(update) {
   if (!message) return;
   if (update?.type && update.type !== 'notify' && update.type !== 'append') return;
 
-  // El dueño puede escribir comandos desde el mismo WhatsApp vinculado.
-  // Ignorar sus mensajes normales evita bucles, pero no debe bloquear comandos
-  // explícitos como "menu" enviados desde ese número dentro de un grupo.
-  const text = getText(message);
-  const explicitCommand =
-    coincideComando(text, 'menu') || coincideComando(text, 'liberarcache') ||
-    isStickerCommand(text) || Boolean(analizarSolicitudDescarga(text));
-  if (message.key?.fromMe && !explicitCommand) return;
+  const texto = getText(message);
+  const comando = resolverComandoUtilidad(texto);
+  const urlSola = obtenerUrlSola(texto);
+  const comandoDetectado = comando || (urlSola ? detectarComandoPorUrl(urlSola) : null);
+
+  if (message.key?.fromMe && !comandoDetectado) return;
 
   const messageId = message.key?.id;
   const processedId = messageId
@@ -1686,119 +1241,105 @@ async function handleMessage(update) {
       processedMessageIds.delete(processedMessageIds.values().next().value);
     }
   }
-  lastMessageReceivedAt = new Date().toISOString();
-  lastMessageChatType = String(message.key?.remoteJid || '').endsWith('@g.us') ? 'grupo' : 'privado';
-  lastMessageJid = message.key?.remoteJid || null;
-  console.log('📩 Mensaje recibido (' + lastMessageChatType + '):', {
-    jid: lastMessageJid,
-    fromMe: message.key?.fromMe === true,
-    tipo: Object.keys(unwrapMessage(message) || {}).join(',') || 'sin tipo',
-    comando: explicitCommand ? text.slice(0, 80) : '(mensaje no comando)'
-  });
 
-  // Registro ligero en memoria: no toca GitHub aquí.
-  // Solo actualiza RAM y el guardado se agrupa en segundo plano.
-  rememberActivity(message.key?.remoteJid, null);
+  const jid = message.key?.remoteJid;
+  const tipoChat = String(jid || '').endsWith('@g.us') ? 'grupo' : 'privado';
+  lastMessageReceivedAt = new Date().toISOString();
+  lastMessageChatType = tipoChat;
+  lastMessageJid = jid || null;
   lastMessageProcessedAt = new Date().toISOString();
 
-  if (coincideComando(text, 'liberarcache')) {
-    const descargas = liberarColaDescargas();
-    const stickersCancelados = stickerQueue.splice(0);
-    for (const job of stickersCancelados) {
-      job.controller.abort(new Error('Solicitud cancelada por liberarcache.'));
-      job.reject(new Error('Solicitud cancelada por liberarcache.'));
-    }
-    const stickersActivosCancelados = activeStickerJobs.size;
-    for (const job of activeStickerJobs) job.controller.abort(new Error('Solicitud cancelada por liberarcache.'));
-    let procesosStickerCancelados = 0;
-    for (const command of [...activeStickerFfmpeg]) {
-      try { command.kill('SIGKILL'); procesosStickerCancelados += 1; } catch {}
-    }
-    for (const proceso of [...activeStickerProbeProcesses]) {
-      try { proceso.kill('SIGKILL'); procesosStickerCancelados += 1; } catch {}
-    }
-    if (typeof global.gc === 'function') {
-      try { global.gc(); } catch (_) {}
-    }
-    const estado = estadoColaDescargas();
-    const memoria = process.memoryUsage();
-    const mb = bytes => Math.round(bytes / 1024 / 1024);
-    return sendText(
-      message.key.remoteJid,
-      '🧹 *LIBERARCACHE*\n\n' +
-      '📥 Descargas pendientes canceladas: ' + descargas.pendientesCancelados + '\n' +
-      '🎬 Trabajos de stickers pendientes cancelados (imagen/video): ' + stickersCancelados.length + '\n' +
-      '⚡ Trabajos de stickers activos señalados para cancelar: ' + stickersActivosCancelados + '\n' +
-      '🧯 Procesos FFmpeg de stickers detenidos: ' + procesosStickerCancelados + '\n' +
-      '🛑 Cancelación de descarga activa: ' + (descargas.descargaActivaCancelada ? 'solicitada' : 'no había descarga activa') + '\n' +
-      '⚙️ Procesos de descarga detenidos: ' + (descargas.procesosCancelados || 0) + '\n' +
-      '⏳ Descarga activa al ejecutar comando: ' + (descargas.descargaActiva ? 'sí (' + descargas.segundosActiva + ' s)' : 'no') + '\n' +
-      '📦 Descargas pendientes restantes: ' + estado.pendientes + '\n' +
-      '🎨 Stickers pendientes restantes: ' + stickerQueue.length + '\n' +
-      '🧠 RAM usada: ' + mb(memoria.heapUsed) + ' MB heap; ' + mb(memoria.rss) + ' MB total\n' +
-      (typeof global.gc === 'function'
-        ? '✅ Recolección de memoria solicitada.'
-        : 'ℹ️ La recolección automática de memoria sigue activa; este proceso no permite forzarla.') + '\n\n' +
-      'Se cancelan las colas y se detienen los FFmpeg activos; una descarga multimedia de WhatsApp ya iniciada puede terminar de transferirse antes de descartarse. No se borra la sesión ni la memoria persistente.',
-      message
-    );
+  console.log('📩 Mensaje recibido (' + tipoChat + '):', {
+    jid,
+    fromMe: message.key?.fromMe === true,
+    tipo: Object.keys(unwrapMessage(message) || {}).join(',') || 'sin tipo',
+    comando: comandoDetectado || '(mensaje no comando)'
+  });
+
+  if (!comandoDetectado) return;
+  if (!sock || connectionState !== 'conectado') {
+    console.warn('⚠️ Se reconoció un comando, pero WhatsApp no está conectado.');
+    return;
   }
 
-  if (coincideComando(text, 'menu')) {
-    return sendText(
-      message.key.remoteJid,
-      '🤖 *el mejor bot*\n\n📸 Imagen + *sticker*\n🎥 Video + *sticker*\n⬇️ Descarga videos de TikTok, Instagram, YouTube, X, Pinterest, Facebook, Reddit, Threads u otros sitios compatibles. También acepta enlaces directos de imagen o video; usa *descargar enlace* para sitios genéricos.\n🧹 *liberarcache* para limpiar colas pendientes y revisar procesos.\n↩️ También puedes responder una imagen o video con *sticker*.',
-      message
-    );
-  }
+  const contenido = unwrapMessage(message) || message.message || {};
+  const mensajeUtilidad = { ...message, message: contenido };
+  const partes = texto.trim().split(/\s+/);
+  const argumentos = urlSola ? [urlSola] : partes;
+  const argumentosSinComando = urlSola ? [urlSola] : partes.slice(1);
+  const enviarTexto = async textoRespuesta =>
+    sock.sendMessage(jid, { text: textoRespuesta }, { quoted: mensajeUtilidad });
 
-  const downloadRequest = analizarSolicitudDescarga(text);
-  if (downloadRequest) {
-    const plataforma = downloadRequest.plataforma;
-    const url = extraerUrl(downloadRequest.enlace, plataforma);
-
-    if (!url) {
-      const nombres = {
-        tiktok: 'TikTok', instagram: 'Instagram', x: 'X', youtube: 'YouTube',
-        pinterest: 'Pinterest', facebook: 'Facebook', reddit: 'Reddit', threads: 'Threads'
+  try {
+    switch (comandoDetectado) {
+      case 'menu':
+        return await enviarTexto(
+          '🧰 *UTILIDADES DEL BOT*\\n\\n' +
+          '🎨 *sticker* o *S*: crea un sticker de una imagen o video adjunto/citado.\\n' +
+          '♻️ *recup1vez*: recupera una foto de ver una vez al responder a ella.\\n' +
+          '🎵 *tiktok enlace*\\n' +
+          '📸 *instagram enlace*\\n' +
+          '📌 *pinterest enlace*\\n' +
+          '🐦 *x enlace*\\n' +
+          '⬇️ *descargar enlace*: descarga desde otros sitios compatibles.\\n' +
+          '🌐 *traduce idioma texto*\\n' +
+          '🎮 *skin nombre* / *stats jugador*\\n' +
+          '🛒 *contacto*\\n' +
+          '💓 *ping*\\n\\n' +
+          'Los comandos aceptan mayúsculas y minúsculas.'
+        );
+      case 'ping':
+        return await enviarTexto('🏓 Pong. El bot está conectado y respondiendo.');
+      case 'sticker':
+        return await utilidades.comandoSticker(sock, mensajeUtilidad);
+      case 'recup1vez':
+        return await utilidades.comandoRecup1Vez(sock, jid, mensajeUtilidad);
+      case 'tiktok':
+        return await utilidades.comandoTiktok(sock, jid, mensajeUtilidad, argumentos);
+      case 'instagram':
+        return await utilidades.comandoInstagram(sock, jid, mensajeUtilidad, argumentos);
+      case 'pinterest':
+        return await utilidades.comandoPinterest(sock, jid, mensajeUtilidad, argumentos);
+      case 'x':
+        return await utilidades.comandoX(sock, jid, mensajeUtilidad, argumentos);
+      case 'youtube':
+      case 'facebook':
+      case 'reddit':
+      case 'threads':
+      case 'descargar':
+        return await utilidades.comandoDescargaSocial(
+          sock, jid, mensajeUtilidad, argumentosSinComando.length ? argumentosSinComando : argumentos,
+          comandoDetectado === 'descargar' ? 'sitio web' : comandoDetectado
+        );
+      case 'traduce':
+        return await utilidades.comandoTraduce(sock, jid, mensajeUtilidad, argumentosSinComando);
+      case 'skin':
+        return await utilidades.comandoSkin(sock, jid, mensajeUtilidad, argumentosSinComando);
+      case 'stats':
+        return await utilidades.comandoStats(sock, jid, mensajeUtilidad, argumentosSinComando);
+      case 'contacto':
+        return await utilidades.comandoContacto(sock, jid, mensajeUtilidad);
+      default:
+        return;
+    }
+  } catch (error) {
+    lastMessageProcessingError = {
+      at: new Date().toISOString(),
+      chatType: tipoChat,
+      message: String(error?.message || error).slice(0, 300)
+    };
+    console.error('❌ Error procesando utilidad (' + tipoChat + '):', lastMessageProcessingError.message);
+    try {
+      await enviarTexto('❌ Ocurrió un error al ejecutar esa utilidad. Revisa los registros del bot.');
+    } catch (sendError) {
+      lastSendError = {
+        at: new Date().toISOString(),
+        chatType: tipoChat,
+        message: String(sendError?.message || sendError).slice(0, 300)
       };
-      const nombre = nombres[plataforma] || plataforma;
-      const ayuda = plataforma === 'auto'
-        ? '⚠️ Usa: descargar https://enlace-publico-de-video'
-        : '⚠️ Envíame un enlace público válido de ' + nombre +
-          '. Ejemplo: ' + plataforma + ' https://...';
-      return sendText(message.key.remoteJid, ayuda, message);
-    }
-
-    return comandoDescargaSocial(
-      sock,
-      message.key.remoteJid,
-      message,
-      url,
-      detectarPlataforma(url) || plataforma
-    );
-  }
-
-  if (!isStickerCommand(text)) return;
-
-  const direct = findMedia(message);
-  if (direct) {
-    return createSticker(message, message, direct.type);
-  }
-
-  const quoted = getQuotedMessage(message);
-  if (quoted) {
-    const quotedMedia = findMedia(quoted);
-    if (quotedMedia) {
-      return createSticker(message, quoted, quotedMedia.type);
+      console.error('❌ Error enviando respuesta de error:', lastSendError.message);
     }
   }
-
-  return sendText(
-    message.key.remoteJid,
-    '📸 Mándame una imagen o video con *sticker*.',
-    message
-  );
 }
 
 async function restartForFreshLogin() {
@@ -2454,7 +1995,7 @@ app.get('/health', (_req, res) => {
     ultimoMotivoDesconexion: lastDisconnectReason,
     intentosReconectar: reconnectAttempts,
     fallosSesionRestaurada: sessionRecoveryFailures,
-    stickersPendientes: stickerQueue.length,
+    stickersPendientes: 0,
     memoriaProcesoMB: Math.round(process.memoryUsage().rss / 1024 / 1024),
     heapUsadoMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
   });
