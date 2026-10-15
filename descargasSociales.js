@@ -256,7 +256,7 @@ function analizarSolicitudDescarga(texto) {
   const trimmed = String(texto || '').trim();
   if (!trimmed) return null;
 
-  const generic = trimmed.match(/^(?:descargar|descarga|download)(?:\s+([\s\S]+))?$/i);
+  const generic = trimmed.match(/^(?:descargar|descarga|download)(?:\s+([\s\S]+))?$/);
   if (generic) {
     return {
       tipo: 'generic',
@@ -267,7 +267,7 @@ function analizarSolicitudDescarga(texto) {
 
   // Tratar la palabra como comando solo si después hay espacio o fin de texto.
   // Así "instagram.com/reel/..." y "youtube.com/watch?..." siguen siendo URLs.
-  const command = trimmed.match(/^(tiktok|instagram|x|twitter|youtube|pinterest|facebook|reddit|threads)(?=\s|$)/i);
+  const command = trimmed.match(/^(tiktok|instagram|x|twitter|youtube|pinterest|facebook|reddit|threads)(?=\s|$)/);
   if (command) {
     const rawPlatform = command[1].toLowerCase();
     return {
