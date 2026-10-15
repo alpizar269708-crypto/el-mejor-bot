@@ -2,7 +2,7 @@
   "name": "el-mejor-bot",
   "version": "1.0.0",
   "private": true,
-  "description": "Bot de WhatsApp para crear stickers de imágenes y videos.",
+  "description": "Bot de WhatsApp con utilidades de stickers, descargas sociales, traducción y Fortnite; sesión cifrada persistida en GitHub.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -20,14 +20,13 @@
     "qrcode": "^1.5.4",
     "sharp": "^0.34.3",
     "wa-sticker-formatter": "^4.4.4",
-    "@ffmpeg-installer/ffmpeg": "^1.1.0",
-    "fluent-ffmpeg": "^2.1.3",
-    "youtube-dl-exec": "^3.1.15"
+    "youtube-dl-exec": "^3.1.15",
+    "puppeteer": "^25.11.0"
   },
   "allowScripts": {
     "@whiskeysockets/baileys": true,
     "youtube-dl-exec": true,
-    "@ffmpeg-installer/linux-x64": true,
+    "puppeteer": true,
     "protobufjs": true,
     "sharp": true
   }
