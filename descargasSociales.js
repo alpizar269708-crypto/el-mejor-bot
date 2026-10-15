@@ -45,7 +45,7 @@ const DIRECT_MEDIA_EXTENSIONS = new Set([
   '.mp4', '.m4v', '.mov', '.webm', '.mkv', '.avi', '.3gp',
   '.mpeg', '.mpg', '.flv', '.ts'
 ]);
-const YTDLP_MEDIA_EXTENSIONS = /\\.(?:mp4|m4v|mov|webm|mkv|avi|3gp|mpeg|mpg|flv|ts)$/i;
+const YTDLP_MEDIA_EXTENSIONS = /\.(?:mp4|m4v|mov|webm|mkv|avi|3gp|mpeg|mpg|flv|ts)$/i;
 
 function encolarDescarga(trabajo) {
   if (colaDescargas.length >= MAX_COLA_DESCARGAS) {
@@ -381,7 +381,7 @@ async function descargaDirecta(urlInicial, tempDir, index = 1, extraHeaders = {}
     const stat = await fs.promises.stat(destino);
     if (!stat.size || stat.size > MAX_MEDIA_BYTES) throw new Error('El archivo vacío o supera los 100 MB.');
 
-    const responseMime = /^video\\//.test(contentType) ? contentType : null;
+    const responseMime = /^video\//.test(contentType) ? contentType : null;
     const mime = responseMime || mimetypeDesdeExtension(extension);
     return {
       path: destino,
