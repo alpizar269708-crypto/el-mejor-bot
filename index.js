@@ -743,7 +743,10 @@ async function startSocketAfterWake() {
     try { await loginRefreshPromise; } catch {}
     return;
   }
-  if (connectionState === 'conectado' || connectionState === 'conectando' || startSocketPromise) return;
+  // Revalidar después de cualquier espera: una desconexión puede haber
+  // programado la reconexión mientras este keepalive esperaba.
+  if (reconnectTimer || connectionState === 'conectado' ||
+      connectionState === 'conectando' || startSocketPromise) return;
 
   const credsPath = path.join(SESSION_DIR, 'creds.json');
   if (!fs.existsSync(credsPath) && sessionSecurityReady()) {
