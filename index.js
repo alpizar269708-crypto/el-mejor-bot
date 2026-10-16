@@ -881,11 +881,12 @@ async function revisarMemoriaYAlertar() {
     if (percent < MEMORY_ALERT_THRESHOLD || memoryAlertSent) return;
 
     const texto =
-      '⚠️ *ADVERTENCIA DE MEMORIA DEL BOT*\\n\\n' +
-      'El uso de memoria está cerca del límite configurado de Render.\\n' +
-      '🧠 Memoria del proceso: *' + Math.round(rssMB) + ' MB / ' +
-      Math.round(limiteMB) + ' MB* (' + Math.round(percent * 100) + '%).\\n' +
-      '📦 Heap usado: *' + Math.round(usage.heapUsed / 1024 / 1024) + ' MB*.\\n\\n' +
+      '⚠️ *ADVERTENCIA DE MEMORIA DEL BOT*\n\n' +
+      'El uso de memoria está cerca del límite configurado de Render.\n' +
+      '🧠 Memoria del contenedor: *' + Math.round(rssMB) + ' MB / ' +
+      Math.round(limiteMB) + ' MB* (' + Math.round(percent * 100) + '%).\n' +
+      '⚙️ RSS de Node: *' + Math.round(process.memoryUsage().rss / 1024 / 1024) + ' MB*.\n' +
+      '📦 Heap usado: *' + Math.round(usage.heapUsed / 1024 / 1024) + ' MB*.\n\n' +
       'Conviene revisar los registros y reducir tareas pesadas. Esta alerta se repetirá solo cuando el uso baje del 70% y vuelva a subir al 80%.';
     await sock.sendMessage(memoryAlertJid, { text: texto });
     memoryAlertSent = true;
@@ -1107,10 +1108,11 @@ async function handleMessage(update) {
         const limiteMB = Math.round(memoria.limitMB);
         const porcentaje = Math.round((rssMB / limiteMB) * 100);
         return await enviarTexto(
-          '✅ *Avisos de memoria activados en este grupo.*\\n\\n' +
-          'Te avisaré automáticamente al llegar al 80% del límite configurado.\\n' +
-          '🧠 Uso actual: *' + rssMB + ' MB / ' + limiteMB + ' MB* (' + porcentaje + '%).\\n' +
-          '📦 Heap usado: *' + Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + ' MB*.\\n\\n' +
+          '✅ *Avisos de memoria activados en este grupo.*\n\n' +
+          'Te avisaré automáticamente al llegar al 80% del límite configurado.\n' +
+          '🧠 Uso actual: *' + rssMB + ' MB / ' + limiteMB + ' MB* (' + porcentaje + '%).\n' +
+          '⚙️ RSS de Node: *' + Math.round(process.memoryUsage().rss / 1024 / 1024) + ' MB*.\n' +
+          '📦 Heap usado: *' + Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + ' MB*.\n\n' +
           'Fuente: ' + memoria.source + '. La vigilancia se revisa cada 30 segundos. Si no se puede leer el límite del contenedor, configura RENDER_MEMORY_LIMIT_MB con el límite real de tu instancia (por defecto 512 MB).'
         );
       }
