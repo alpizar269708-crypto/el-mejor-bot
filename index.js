@@ -880,8 +880,7 @@ const ALIAS_UTILIDADES = new Map([
   ['youtube', 'youtube'], ['facebook', 'facebook'],
   ['reddit', 'reddit'], ['threads', 'threads'],
   ['descargar', 'descargar'], ['descarga', 'descargar'], ['download', 'descargar'],
-  ['traduce', 'traduce'], ['skin', 'skin'], ['stats', 'stats'],
-  ['contacto', 'contacto']
+  ['traduce', 'traduce']
 ]);
 
 function resolverComandoUtilidad(texto) {
@@ -1005,8 +1004,6 @@ async function handleMessage(update) {
           '🐦 *x enlace*\n' +
           '⬇️ *descargar enlace*: descarga desde otros sitios compatibles.\n' +
           '🌐 *traduce idioma texto*\n' +
-          '🎮 *skin nombre* / *stats jugador*\n' +
-          '🛒 *contacto*\n' +
           '💓 *ping*\n\n' +
           'Los comandos aceptan mayúsculas y minúsculas.'
         );
@@ -1035,12 +1032,6 @@ async function handleMessage(update) {
         );
       case 'traduce':
         return await utilidades.comandoTraduce(sock, jid, mensajeUtilidad, argumentosSinComando);
-      case 'skin':
-        return await utilidades.comandoSkin(sock, jid, mensajeUtilidad, argumentosSinComando);
-      case 'stats':
-        return await utilidades.comandoStats(sock, jid, mensajeUtilidad, argumentosSinComando);
-      case 'contacto':
-        return await utilidades.comandoContacto(sock, jid, mensajeUtilidad);
       default:
         return;
     }
