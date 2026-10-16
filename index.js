@@ -1894,6 +1894,12 @@ app.get('/estado-vinculacion', (_req, res) => {
   });
 });
 
+function normalizePhoneNumber(value) {
+  // Baileys espera el número internacional solo con dígitos, sin +, espacios
+  // ni guiones. No añadir una lada automáticamente para evitar vincular otro número.
+  return String(value || '').replace(/\\D/g, '');
+}
+
 async function requestPairingCodeIfNeeded() {
   // Solicitar el código solo durante una vinculación manual y evitar llamadas
   // simultáneas desde los eventos "qr" y "connecting".
