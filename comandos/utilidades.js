@@ -169,7 +169,7 @@ async function prepararImagenSinRecorte(buffer) {
 // Los stickers animados de WhatsApp deben mantenerse por debajo de 500 KiB.
 // Re-encode iterativo reduce dimensiones/calidad sin convertir la animación en imagen fija.
 async function comprimirStickerAnimado(buffer) {
-    const limiteBytes = 500 * 1024;
+    const limiteBytes = 420 * 1024;
     let ultimo = buffer;
     const perfiles = [
         { lado: 512, calidad: 35 },
@@ -217,7 +217,10 @@ async function convertirStickerLocal(buffer, esVideo) {
         background: { r: 0, g: 0, b: 0, alpha: 0 }
     });
     const resultado = await sticker.toBuffer();
-    return esVideo ? await comprimirStickerAnimado(resultado) : resultado;
+    if (!esVideo) return resultado;
+    // Volver a insertar la etiqueta después de comprimir, ya que la recompresión
+    // WebP elimina los metadatos EXIF del paquete/autor.
+    return await agregarMetadatosSticker(await comprimirStickerAnimado(resultado), true);
 }
 
 async function convertirVideoASticker(buffer, hash) {
