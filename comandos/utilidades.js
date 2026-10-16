@@ -48,7 +48,6 @@ const { Sticker, StickerTypes } = require('wa-sticker-formatter');
 
 const STICKER_PACK = 'JASC13';
 const STICKER_AUTHOR = 'JASC13 - BOT';
-const STICKER_SUPPORT_TEXT = 'Apoya a un creador: JASC13';
 
 // 🚀 Caché para no repetir conversiones idénticas y deduplicar trabajos simultáneos.
 const stickerCache = new Map();
@@ -372,7 +371,7 @@ async function comandoRecup1Vez(sock, chatId, msg) {
         await sock.sendMessage(chatId, {
             image: buffer,
             mimetype,
-            caption: '♻️ Foto recuperada\n\nApoya a un creador: *JASC13*'
+            caption: '♻️ Foto recuperada'
         }, { quoted: msg });
 
         console.log('✅ recup1vez: foto recuperada correctamente. Capas:', encontrada.ruta.join(' > '));
@@ -1433,8 +1432,7 @@ async function comandoInstagram(sock, chatId, msg, args) {
 
         await sock.sendMessage(chatId, {
             video: videoBuffer,
-            mimetype: 'video/mp4',
-            caption: '📹Tu video está listo\n\nApoya a un creador: *JASC13*'
+            mimetype: 'video/mp4'
         }, { quoted: msg });
 
         console.log('✅ INSTAGRAM: video enviado correctamente.');
@@ -1442,8 +1440,7 @@ async function comandoInstagram(sock, chatId, msg, args) {
         console.error('Error al descargar Instagram:', e?.stack || e);
         await sock.sendMessage(chatId, {
             text: '❌ *DIAGNÓSTICO INSTAGRAM*\n\n' +
-                String(e?.message || e).slice(0, 1800) +
-                '\n\nApoya a un creador: *JASC13*'
+                String(e?.message || e).slice(0, 1800)
         }, { quoted: msg });
     }
 }
@@ -1465,9 +1462,6 @@ async function comandoTiktok(sock, chatId, msg, args) {
     }
 
     try {
-        await sock.sendMessage(chatId, {
-            text: '⏳ Descargando video de TikTok...'
-        }, { quoted: msg });
 
         let url = urlOriginal;
         let datos;
@@ -1586,8 +1580,7 @@ async function comandoTiktok(sock, chatId, msg, args) {
 
         await sock.sendMessage(chatId, {
             video: videoBuffer,
-            mimetype: 'video/mp4',
-            caption: '📹Tu video está listo\n\nApoya a un creador: *JASC13*'
+            mimetype: 'video/mp4'
         }, { quoted: msg });
 
     } catch (e) {
@@ -1623,7 +1616,6 @@ async function comandoDescargaSocial(sock, chatId, msg, args, plataforma = 'red 
     }
     const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'social-media-'));
     try {
-        await sock.sendMessage(chatId, { text: '⬇️ Descargando fotos/videos en la mejor calidad disponible...' }, { quoted: msg });
         const salida = path.join(tempDir, '%(autonumber)02d.%(ext)s');
         await youtubedl(url, {
             output: salida,
@@ -1657,20 +1649,16 @@ async function comandoDescargaSocial(sock, chatId, msg, args, plataforma = 'red 
             if (!stat.size || stat.size > 64 * 1024 * 1024) continue;
             const buffer = await fs.promises.readFile(archivo);
             const ext = path.extname(archivo).toLowerCase();
-            const caption = '📥 ' + plataforma + ': archivo ' + (enviados + 1) + '\n\nApoya a un creador: *JASC13*';
             if (['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) {
-                await sock.sendMessage(chatId, { image: buffer, caption }, { quoted: msg });
+                await sock.sendMessage(chatId, { image: buffer }, { quoted: msg });
             } else if (ext === '.gif') {
-                await sock.sendMessage(chatId, { video: buffer, gifPlayback: true, mimetype: 'video/mp4', caption }, { quoted: msg });
+                await sock.sendMessage(chatId, { video: buffer, gifPlayback: true, mimetype: 'video/mp4' }, { quoted: msg });
             } else {
-                await sock.sendMessage(chatId, { video: buffer, mimetype: ext === '.webm' ? 'video/webm' : 'video/mp4', caption }, { quoted: msg });
+                await sock.sendMessage(chatId, { video: buffer, mimetype: ext === '.webm' ? 'video/webm' : 'video/mp4' }, { quoted: msg });
             }
             enviados++;
         }
         if (!enviados) throw new Error('Los archivos superan el límite de 64 MB o tienen un formato no compatible con WhatsApp.');
-        if (archivos.length > enviados) {
-            await sock.sendMessage(chatId, { text: 'ℹ️ Se enviaron ' + enviados + ' archivos. Algunos elementos se omitieron por tamaño o compatibilidad.' }, { quoted: msg });
-        }
     } catch (error) {
         console.error('Error descargando ' + plataforma + ':', error?.stack || error);
         await sock.sendMessage(chatId, { text: '❌ No pude descargar esa publicación de ' + plataforma + '. Verifica que sea pública.\n\nDetalle: ' + String(error?.message || error).replace(/\s+/g, ' ').slice(0, 500) }, { quoted: msg });
@@ -1711,7 +1699,6 @@ async function comandoPinterest(sock, chatId, msg, args) {
 
     let tempDir;
     try {
-        await sock.sendMessage(chatId, { text: '📌 Descargando Pinterest en la mejor calidad disponible (hasta 1080p)...' }, { quoted: msg });
         tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pinterest-download-'));
         const salida = path.join(tempDir, 'pinterest.%(ext)s');
         await youtubedl(url, {
@@ -1743,8 +1730,7 @@ async function comandoPinterest(sock, chatId, msg, args) {
         if (video.length < 10000) throw new Error('El archivo recibido no parece un video válido.');
         await sock.sendMessage(chatId, {
             video,
-            mimetype: 'video/mp4',
-            caption: '📌 Video de Pinterest listo en la mejor calidad disponible.\n\nApoya a un creador: *JASC13*'
+            mimetype: 'video/mp4'
         }, { quoted: msg });
     } catch (error) {
         console.error('Error descargando Pinterest:', error?.stack || error);
@@ -1775,88 +1761,6 @@ async function comandoTraduce(sock, chatId, msg, args) {
     }
 }
 
-// 🎨 5. Skin (Buscador de objetos de Fortnite)
-async function comandoSkin(sock, chatId, msg, args) {
-    const nombreSkin = args.join(' ');
-    if (!nombreSkin) {
-        await sock.sendMessage(chatId, { text: '⚠️ Escribe el nombre de la skin. Ejemplo: `skin Midas`' }, { quoted: msg });
-        return;
-    }
-    try {
-        const res = await fetch(`https://fortnite-api.com/v2/cosmetics/br/search?name=${encodeURIComponent(nombreSkin)}&language=es`);
-        const data = await res.json();
-        if (data && data.status === 200 && data.data) {
-            const item = data.data;
-            let mensaje = `🎨 *SKIN: ${item.name}*\n\n`;
-            mensaje += `📌 *Rareza:* ${item.rarity?.displayValue || 'Desconocida'}\n`;
-            mensaje += `📝 *Descripción:* ${item.description || 'Sin descripción'}\n`;
-            if (item.images?.icon) {
-                await sock.sendMessage(chatId, { image: { url: item.images.icon }, caption: mensaje }, { quoted: msg });
-            } else {
-                await sock.sendMessage(chatId, { text: mensaje }, { quoted: msg });
-            }
-        } else {
-            await sock.sendMessage(chatId, { text: '❌ No se encontró ninguna skin con ese nombre.' }, { quoted: msg });
-        }
-    } catch (e) {
-        await sock.sendMessage(chatId, { text: '❌ Error al buscar la skin.' }, { quoted: msg });
-    }
-}
-
-// 📊 6. Stats (Estadísticas de Fortnite)
-async function comandoStats(sock, chatId, msg, args) {
-    if (!args || args.length === 0) {
-        return await sock.sendMessage(chatId, { text: `❌ Debes escribir el nombre de usuario de Epic Games.\nEjemplo: *stats alpizarh117*` }, { quoted: msg });
-    }
-
-    const nombreUsuario = args.join(' ');
-    let msgCarga = await sock.sendMessage(chatId, { text: `🎮 Consultando estadísticas para *${nombreUsuario}*...` }, { quoted: msg });
-
-    try {
-        const respuesta = await fetch(`https://fortnite-api.com/v2/stats/br/v2?name=${encodeURIComponent(nombreUsuario)}`, {
-            headers: {
-                'Authorization': 'cbb386fe-de0e-438d-9f71-bf4001b95e9b' // Reemplaza esto con tu llave real de fortnite-api.com
-            }
-        });
-
-        const datos = await respuesta.json();
-
-        if (!datos.status || datos.status !== 200 || !datos.data) {
-            return await sock.sendMessage(chatId, { 
-                text: `❌ No se encontraron estadísticas para *${nombreUsuario}*.\nVerifica que el nombre sea correcto o que su perfil sea público.` 
-            }, { quoted: msg });
-        }
-
-        const stats = datos.data.stats.all.overall;
-        const cuenta = datos.data.account;
-
-        let textoRespuesta = `📊 *ESTADÍSTICAS DE EPIC GAMES*\n\n` +
-            `👤 *Jugador:* ${cuenta.name}\n` +
-            `🏆 *Nivel de Cuenta:* ${datos.data.battlePass.level}\n\n` +
-            `🕹️ *Partidas Jugadas:* ${stats.matches}\n` +
-            `👑 *Top 1:* ${stats.wins}\n` +
-            `🎯 *Kills:* ${stats.kills} (${stats.kd.toFixed(2)} K/D)\n` +
-            `⏱️ *Tiempo Jugado:* ${Math.round(stats.minutesPlayed / 60)} horas\n\n` +
-            `Support-a-Creator: *JASC13* ❤️`;
-
-        await sock.sendMessage(chatId, { text: textoRespuesta }, { quoted: msg });
-
-    } catch (error) {
-        console.error("Error en comando stats:", error);
-        await sock.sendMessage(chatId, { text: `⚠️ Ocurrió un error de conexión al consultar la API de Fortnite para *${nombreUsuario}*.` }, { quoted: msg });
-    }
-};
-
-// 🛒 7. Contacto (Menú de atención y compras)
-async function comandoContacto(sock, chatId, msg) {
-    const texto = `🛒 *CENTRO DE ATENCIÓN Y COMPRAS* 🛒\n\n` +
-        `¿Deseas adquirir paVos, skins, pases de batalla y mas...\n\n` +
-        `💬 Escribe a administrador +52 81 8010 3140 para gestionar tu pedido\n\n` +
-        `O visita https://jasc-store.com/tienda\n\n` +
-        `Support-a-Creator: *JASC13* ❤️`;
-    await sock.sendMessage(chatId, { text: texto }, { quoted: msg });
-}
-
 module.exports = {
     comandoSticker,
     comandoRecup1Vez,
@@ -1865,8 +1769,5 @@ module.exports = {
     comandoPinterest,
     comandoX,
     comandoDescargaSocial,
-    comandoTraduce,
-    comandoSkin,
-    comandoStats,
-    comandoContacto
+    comandoTraduce
 };
