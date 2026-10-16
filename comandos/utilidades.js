@@ -2,35 +2,13 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-// Cargar dependencias pesadas solo cuando se usan: los comandos básicos no
-// necesitan inicializar Sharp, Puppeteer ni youtube-dl al arrancar WhatsApp.
-let puppeteerInstancia;
-let sharpInstancia;
-let youtubeDlInstancia;
-function obtenerPuppeteer() {
-    if (!puppeteerInstancia) puppeteerInstancia = require('puppeteer');
-    return puppeteerInstancia;
-}
-function sharp(...args) {
-    if (!sharpInstancia) sharpInstancia = require('sharp');
-    return sharpInstancia(...args);
-}
-function obtenerYoutubeDl() {
-    if (!youtubeDlInstancia) {
-        const youtubeDlExec = require('youtube-dl-exec');
-        const ytDlpPersonalizado = path.join(process.cwd(), '.venv', 'bin', 'yt-dlp');
-        youtubeDlInstancia = fs.existsSync(ytDlpPersonalizado)
-            ? youtubeDlExec.create(ytDlpPersonalizado)
-            : youtubeDlExec;
-    }
-    return youtubeDlInstancia;
-}
-function puppeteerLaunch(options) {
-    return obtenerPuppeteer().launch(options);
-}
-function youtubedl(...args) {
-    return obtenerYoutubeDl()(...args);
-}
+const puppeteer = require('puppeteer');
+const sharp = require('sharp');
+const youtubeDlExec = require('youtube-dl-exec');
+const ytDlpPersonalizado = path.join(process.cwd(), '.venv', 'bin', 'yt-dlp');
+const youtubedl = fs.existsSync(ytDlpPersonalizado)
+    ? youtubeDlExec.create(ytDlpPersonalizado)
+    : youtubeDlExec;
 
 console.log('✅ Módulo TikTok: parser de enlaces + SnapTik activo');
 
@@ -74,36 +52,19 @@ const STICKER_AUTHOR = 'el mejor bot del mundo mundial';
 // 🚀 Caché para no repetir conversiones idénticas y deduplicar trabajos simultáneos.
 const stickerCache = new Map();
 const stickerEnProceso = new Map();
-const STICKER_CACHE_TTL_MS = 5 * 60 * 1000;
-const STICKER_CACHE_MAX = 8;
-const STICKER_CACHE_MAX_BYTES = 4 * 1024 * 1024;
-let stickerCacheBytes = 0;
-let stickersActivos = 0;
-const STICKER_MAX_CONCURRENTES = 2;
+const STICKER_CACHE_TTL_MS = 10 * 60 * 1000;
+const STICKER_CACHE_MAX = 12;
 
 // 🎨 1. Sticker (conversión híbrida: Cloudinary + fallback local)
-function eliminarStickerCache(clave) {
-    const dato = stickerCache.get(clave);
-    if (!dato) return;
-    stickerCacheBytes = Math.max(0, stickerCacheBytes - (dato.buffer?.length || 0));
-    stickerCache.delete(clave);
-}
-function guardarStickerCache(clave, buffer) {
-    if (!Buffer.isBuffer(buffer) || buffer.length > STICKER_CACHE_MAX_BYTES) return;
-    eliminarStickerCache(clave);
-    stickerCache.set(clave, { buffer, expira: Date.now() + STICKER_CACHE_TTL_MS });
-    stickerCacheBytes += buffer.length;
-    limpiarCacheStickers();
-}
 function limpiarCacheStickers() {
     const ahora = Date.now();
     for (const [clave, dato] of stickerCache) {
-        if (dato.expira <= ahora) eliminarStickerCache(clave);
+        if (dato.expira <= ahora) stickerCache.delete(clave);
     }
-    while (stickerCache.size > STICKER_CACHE_MAX || stickerCacheBytes > STICKER_CACHE_MAX_BYTES) {
+    while (stickerCache.size > STICKER_CACHE_MAX) {
         const primeraClave = stickerCache.keys().next().value;
         if (primeraClave === undefined) break;
-        eliminarStickerCache(primeraClave);
+        stickerCache.delete(primeraClave);
     }
 }
 
@@ -266,7 +227,7 @@ async function convertirVideoASticker(buffer, hash) {
     limpiarCacheStickers();
     const cacheado = stickerCache.get('vid:' + hash);
     if (cacheado && cacheado.expira > Date.now()) return cacheado.buffer;
-    if (cacheado) eliminarStickerCache('vid:' + hash);
+    if (cacheado) stickerCache.delete('vid:' + hash);
     if (stickerEnProceso.has(hash)) return stickerEnProceso.get(hash);
 
     const trabajo = (async () => {
@@ -280,7 +241,8 @@ async function convertirVideoASticker(buffer, hash) {
             }
         }
         if (!resultado) resultado = await convertirStickerLocal(buffer, true);
-        guardarStickerCache('vid:' + hash, resultado);
+        stickerCache.set('vid:' + hash, { buffer: resultado, expira: Date.now() + STICKER_CACHE_TTL_MS });
+        limpiarCacheStickers();
         return resultado;
     })();
     stickerEnProceso.set(hash, trabajo);
@@ -293,13 +255,6 @@ async function convertirVideoASticker(buffer, hash) {
 
 async function comandoSticker(sock, msg) {
     const chatJid = msg.key.remoteJid;
-    if (stickersActivos >= STICKER_MAX_CONCURRENTES) {
-        await sock.sendMessage(chatJid, {
-            text: '⏳ Estoy procesando otros stickers. Inténtalo de nuevo en unos segundos.'
-        }, { quoted: msg });
-        return;
-    }
-    stickersActivos++;
     try {
         const msgTipo = msg.message?.imageMessage || msg.message?.videoMessage || msg.message?.documentMessage;
         const msjCitado = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
@@ -350,7 +305,8 @@ async function comandoSticker(sock, msg) {
                 stickerBuffer = cacheado.buffer;
             } else {
                 stickerBuffer = await convertirStickerLocal(buffer, false);
-                guardarStickerCache(clave, stickerBuffer);
+                stickerCache.set(clave, { buffer: stickerBuffer, expira: Date.now() + STICKER_CACHE_TTL_MS });
+                limpiarCacheStickers();
             }
         }
 
@@ -358,8 +314,6 @@ async function comandoSticker(sock, msg) {
     } catch (e) {
         console.error('Error al crear el sticker:', e);
         await sock.sendMessage(chatJid, { text: '❌ Error al crear el sticker. Asegúrate de que el formato sea soportado.' }, { quoted: msg });
-    } finally {
-        stickersActivos = Math.max(0, stickersActivos - 1);
     }
 }
 
@@ -543,7 +497,7 @@ async function resolverEnlaceTikTok(url) {
     if (/^(?:vt|vm)\.tiktok\.com$/i.test(original.hostname) || /\/t\//i.test(original.pathname)) {
         let browser;
         try {
-            browser = await puppeteerLaunch(opcionesPuppeteer());
+            browser = await puppeteer.launch(opcionesPuppeteer());
             const page = await browser.newPage();
             await page.setUserAgent(headers['User-Agent']);
             await page.setExtraHTTPHeaders({ 'Accept-Language': headers['Accept-Language'] });
@@ -710,7 +664,7 @@ async function obtenerTikTokDirecto(url) {
 async function obtenerTikTokConNavegador(url) {
     let browser;
     try {
-        browser = await puppeteerLaunch(opcionesPuppeteer());
+        browser = await puppeteer.launch(opcionesPuppeteer());
         const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
         await page.setExtraHTTPHeaders({ 'Accept-Language': 'es-MX,es;q=0.9,en;q=0.8' });
@@ -728,7 +682,7 @@ async function obtenerTikTokConNavegador(url) {
 async function descargarVideoTikTokConNavegador(videoUrl, cookie = '') {
     let browser;
     try {
-        browser = await puppeteerLaunch(opcionesPuppeteer());
+        browser = await puppeteer.launch(opcionesPuppeteer());
         const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
         await page.setViewport({ width: 1365, height: 900 });
@@ -817,7 +771,7 @@ async function descargarVideoTikTokConNavegador(videoUrl, cookie = '') {
 async function obtenerCookiesTikTokParaYtDlp(url) {
     let browser;
     try {
-        browser = await puppeteerLaunch(opcionesPuppeteer());
+        browser = await puppeteer.launch(opcionesPuppeteer());
         const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
         await page.setExtraHTTPHeaders({
@@ -1086,7 +1040,7 @@ async function descargarVideoTikTok(videoUrl, cookie = '') {
 async function descargarTikTokConSnapTik(url) {
     let browser;
     try {
-        browser = await puppeteerLaunch(opcionesPuppeteer());
+        browser = await puppeteer.launch(opcionesPuppeteer());
         const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
         await page.setExtraHTTPHeaders({ 'Accept-Language': 'es-MX,es;q=0.9,en;q=0.8' });
@@ -1262,7 +1216,7 @@ async function descargarInstagramConYtDlp(url) {
 async function descargarInstagramConNavegador(url) {
     let browser;
     try {
-        browser = await puppeteerLaunch(opcionesPuppeteer());
+        browser = await puppeteer.launch(opcionesPuppeteer());
         const page = await browser.newPage();
 
         await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
