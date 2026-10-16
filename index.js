@@ -724,6 +724,12 @@ function scheduleSessionRestoreRetry(mode = 'backupOnly', attempt = 1) {
 async function startSocketAfterWake() {
   if (shuttingDown) return;
 
+  // No iniciar un segundo socket mientras ya hay una reconexión programada.
+  // /keepalive puede ejecutarse justo tras una caída 440; ignorar el temporizador
+  // abría otro socket y podía generar conflictos de sesión en el mismo proceso.
+  if (reconnectTimer) return;
+  if (startSocketPromise) return;
+
   if (startupPromise && !startupReady) {
     try { await startupPromise; } catch {}
   }
@@ -1149,37 +1155,80 @@ async function anunciarConexionEnGrupoStickers(socket, generation) {
     .trim();
 
   try {
-    // Hasta seis intentos durante el primer minuto; si falla, otra reconexión
-    // podrá intentarlo de nuevo. No se marca como enviado antes de confirmar.
-    for (let intento = 1; intento <= 6; intento++) {
-      if (shuttingDown || generation !== socketGeneration || sock !== socket) return;
-      if (intento > 1) await new Promise(resolve => setTimeout(resolve, 10000));
-
-      try {
-        const grupos = await socket.groupFetchAllParticipating();
-        const entradas = Object.entries(grupos || {}).filter(([jid]) => jid.endsWith('@g.us'));
-        const objetivo = entradas.find(([, metadata]) =>
-          normalizarNombreGrupo(metadata?.subject) === 'bot de stickers'
-        );
-
-        if (!objetivo) {
-          console.warn('⚠️ Intento ' + intento + '/6: no aparece el grupo "Bot de stickers". Grupos visibles: ' +
-            (entradas.map(([, metadata]) => String(metadata?.subject || '(sin nombre)')).slice(0, 30).join(' | ') || '(ninguno)'));
-          continue;
-        }
-
-        if (shuttingDown || generation !== socketGeneration || sock !== socket) return;
-        await socket.sendMessage(objetivo[0], {
-          text: '🟢 ¡Ya estoy en línea! El bot de stickers está conectado y listo para recibir imágenes y videos. 🤖'
-        });
-        onlineAnnouncementSent = true;
-        console.log('✅ Aviso de conexión enviado al grupo "Bot de stickers" (' + objetivo[0] + ').');
-        return;
-      } catch (error) {
-        console.error('❌ Intento ' + intento + '/6 al avisar en "Bot de stickers":', error?.message || error);
-      }
+    // Esperar a que la sesión se estabilice. Antes se enviaba casi inmediatamente
+    // al abrir, justo antes de la desconexión 440 que aparece en los registros.
+    await new Promise(resolve => setTimeout(resolve, 8000));
+    if (shuttingDown || generation !== socketGeneration || sock !== socket ||
+        connectionState !== 'conectado' || reconnectTimer) {
+      console.warn('⏭️ Se omite el aviso: la conexión no permaneció estable durante 8 segundos.');
+      return;
     }
-    console.error('❌ No se pudo enviar el aviso a "Bot de stickers" tras seis intentos. Comprueba que el bot siga siendo miembro del grupo y que el nombre coincida.');
+
+    let objetivo = null;
+    try {
+      const grupos = await socket.groupFetchAllParticipating();
+      const entradas = Object.entries(grupos || {}).filter(([jid]) => jid.endsWith('@g.us'));
+      objetivo = entradas.find(([, metadata]) =>
+        normalizarNombreGrupo(metadata?.subject) === 'bot de stickers'
+      );
+      if (!objetivo) {
+        console.error('❌ No aparece el grupo "Bot de stickers". Grupos visibles: ' +
+          (entradas.map(([, metadata]) => String(metadata?.subject || '(sin nombre)')).slice(0, 30).join(' | ') || '(ninguno)'));
+        return;
+      }
+    } catch (error) {
+      console.error('❌ No se pudo consultar la lista de grupos para el aviso:', error?.message || error);
+      return;
+    }
+
+    if (shuttingDown || generation !== socketGeneration || sock !== socket ||
+        connectionState !== 'conectado' || reconnectTimer) return;
+
+    let sentMessageId = null;
+    let resolveAck;
+    const ackPromise = new Promise(resolve => { resolveAck = resolve; });
+    const onMessageUpdate = updates => {
+      for (const item of updates || []) {
+        if (item?.key?.remoteJid === objetivo[0] &&
+            item?.key?.id === sentMessageId &&
+            Number(item?.update?.status) >= 2) {
+          resolveAck({ status: Number(item.update.status), participant: item.update.participant || null });
+        }
+      }
+    };
+
+    // Registrar el listener antes del envío para no perder un acuse rápido.
+    socket.ev.on('messages.update', onMessageUpdate);
+    try {
+      const sent = await socket.sendMessage(objetivo[0], {
+        text: '🟢 ¡Ya estoy en línea! El bot de stickers está conectado y listo para recibir imágenes y videos. 🤖'
+      });
+      sentMessageId = sent?.key?.id || null;
+      if (!sentMessageId) {
+        console.error('⚠️ WhatsApp no devolvió ID para el aviso; no se marcará como entregado.');
+        return;
+      }
+      console.log('📤 WhatsApp aceptó el aviso para "Bot de stickers". ID: ' + sentMessageId);
+
+      const ack = await Promise.race([
+        ackPromise,
+        new Promise(resolve => setTimeout(() => resolve(null), 15000))
+      ]);
+
+      if (ack) {
+        onlineAnnouncementSent = true;
+        console.log('✅ Acuse de entrega recibido para "Bot de stickers". Estado: ' +
+          ack.status + (ack.participant ? ', participante: ' + ack.participant : '') +
+          ', ID: ' + sentMessageId);
+      } else {
+        console.error('⚠️ El aviso tiene ID ' + sentMessageId +
+          ', pero no llegó acuse de entrega en 15 segundos. Se volverá a intentar tras una reconexión estable.');
+      }
+    } catch (error) {
+      console.error('❌ Falló el envío del aviso a "Bot de stickers":', error?.message || error);
+    } finally {
+      socket.ev.off('messages.update', onMessageUpdate);
+    }
   } finally {
     onlineAnnouncementInProgress = false;
   }
@@ -1554,7 +1603,8 @@ app.get('/', async (_req, res) => {
     if (startupPromise && !startupReady) {
       try { await startupPromise; } catch {}
     }
-    if (startupReady && !authState?.state?.creds?.registered && connectionState === 'desconectado') {
+    if (startupReady && !reconnectTimer && !startSocketPromise &&
+        !authState?.state?.creds?.registered && connectionState === 'desconectado') {
       await startSocket(false);
     }
   } catch (error) {
