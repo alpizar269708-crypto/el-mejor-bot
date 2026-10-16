@@ -825,6 +825,48 @@ let lastUpsertGroupCount = 0;
 let lastMessageProcessingError = null;
 let lastSendError = null;
 
+// Render no expone el límite exacto de memoria al proceso. Configura
+// RENDER_MEMORY_LIMIT_MB con el límite real de tu instancia si no es 512 MB.
+const RENDER_MEMORY_LIMIT_MB = Math.max(128, Number(process.env.RENDER_MEMORY_LIMIT_MB) || 512);
+const MEMORY_ALERT_THRESHOLD = 0.80;
+const MEMORY_ALERT_RESET_THRESHOLD = 0.70;
+let memoryAlertJid = process.env.MEMORY_ALERT_JID?.trim() || null;
+let memoryAlertSent = false;
+let memoryCheckInProgress = false;
+
+async function revisarMemoriaYAlertar() {
+  if (memoryCheckInProgress || !memoryAlertJid || !sock ||
+      connectionState !== 'conectado' || shuttingDown) return;
+  memoryCheckInProgress = true;
+  try {
+    const usage = process.memoryUsage();
+    const rssMB = usage.rss / 1024 / 1024;
+    const percent = rssMB / RENDER_MEMORY_LIMIT_MB;
+    if (percent < MEMORY_ALERT_RESET_THRESHOLD) {
+      memoryAlertSent = false;
+      return;
+    }
+    if (percent < MEMORY_ALERT_THRESHOLD || memoryAlertSent) return;
+
+    const texto =
+      '⚠️ *ADVERTENCIA DE MEMORIA DEL BOT*\\n\\n' +
+      'El uso de memoria está cerca del límite configurado de Render.\\n' +
+      '🧠 Memoria del proceso: *' + Math.round(rssMB) + ' MB / ' +
+      RENDER_MEMORY_LIMIT_MB + ' MB* (' + Math.round(percent * 100) + '%).\\n' +
+      '📦 Heap usado: *' + Math.round(usage.heapUsed / 1024 / 1024) + ' MB*.\\n\\n' +
+      'Conviene revisar los registros y reducir tareas pesadas. Esta alerta se repetirá solo cuando el uso baje del 70% y vuelva a subir al 80%.';
+    await sock.sendMessage(memoryAlertJid, { text: texto });
+    memoryAlertSent = true;
+    console.warn('⚠️ Alerta automática de memoria enviada. RSS=' + Math.round(rssMB) +
+      ' MB (' + Math.round(percent * 100) + '% del límite configurado).');
+  } catch (error) {
+    console.error('❌ No se pudo enviar la alerta automática de memoria:', error?.message || error);
+  } finally {
+    memoryCheckInProgress = false;
+  }
+}
+setInterval(() => { void revisarMemoriaYAlertar(); }, 30000).unref();
+
 function getText(message) {
   const m = unwrapMessage(message);
   if (!m) return '';
@@ -861,7 +903,8 @@ function normalizarTextoComando(texto) {
 function normalizarComando(texto) {
   return normalizarTextoComando(texto)
     .split(/\s+/)[0]
-    .replace(/^[!/.#]+/, '');
+    .replace(/^[!*_~`\\/.#]+/, '')
+    .replace(/[!*_~`]+$/g, '');
 }
 
 function distanciaEdicion(a, b) {
@@ -883,7 +926,7 @@ function distanciaEdicion(a, b) {
 
 const ALIAS_UTILIDADES = new Map([
   ['menu', 'menu'], ['ayuda', 'menu'], ['help', 'menu'],
-  ['ping', 'ping'],
+  ['ping', 'ping'], ['enviaradvmemo', 'enviaradvmemo'],
   ['s', 'sticker'], ['st', 'sticker'], ['sticker', 'sticker'],
   ['stiker', 'sticker'], ['stikers', 'sticker'], ['stickers', 'sticker'],
   ['recup1vez', 'recup1vez'],
@@ -1021,6 +1064,22 @@ async function handleMessage(update) {
         );
       case 'ping':
         return await enviarTexto('🏓 Pong. El bot está conectado y respondiendo.');
+      case 'enviaradvmemo': {
+        if (tipoChat !== 'grupo') {
+          return await enviarTexto('⚠️ Ejecuta *enviaradvmemo* dentro del grupo donde quieres recibir las alertas de memoria.');
+        }
+        memoryAlertJid = jid;
+        memoryAlertSent = false;
+        const rssMB = Math.round(process.memoryUsage().rss / 1024 / 1024);
+        const porcentaje = Math.round((rssMB / RENDER_MEMORY_LIMIT_MB) * 100);
+        return await enviarTexto(
+          '✅ *Avisos de memoria activados en este grupo.*\\n\\n' +
+          'Te avisaré automáticamente al llegar al 80% del límite configurado.\\n' +
+          '🧠 Uso actual: *' + rssMB + ' MB / ' + RENDER_MEMORY_LIMIT_MB + ' MB* (' + porcentaje + '%).\\n' +
+          '📦 Heap usado: *' + Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + ' MB*.\\n\\n' +
+          'La vigilancia se revisa cada 30 segundos. Si Render usa otro límite, configura RENDER_MEMORY_LIMIT_MB en las variables de entorno. Por defecto se toma 512 MB.'
+        );
+      }
       case 'sticker':
         return await utilidades.comandoSticker(sock, mensajeUtilidad);
       case 'recup1vez':
