@@ -659,6 +659,8 @@ function scheduleReconnect(statusCode) {
   );
 
   reconnectTimer = setTimeout(() => {
+    // Limpiar el bloqueo antes de iniciar el único socket de reconexión.
+    reconnectTimer = null;
     startSocket(false).catch(error => {
       console.error('❌ Error levantando reconexión:', error.message);
       scheduleReconnect(statusCode);
