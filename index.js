@@ -1894,6 +1894,39 @@ app.get('/estado-vinculacion', (_req, res) => {
   });
 });
 
+async function requestPairingCodeIfNeeded() {
+  // Solicitar el código solo durante una vinculación manual y evitar llamadas
+  // simultáneas desde los eventos "qr" y "connecting".
+  if (!pairingNumber || pairingRequested || shuttingDown) return;
+  const currentSocket = sock;
+  if (!currentSocket || typeof currentSocket.requestPairingCode !== 'function') {
+    pairingError = 'WhatsApp todavía no está listo para generar el código. Espera unos segundos y vuelve a intentarlo.';
+    console.warn('⚠️ No se pudo solicitar código: el socket de WhatsApp aún no está listo.');
+    return;
+  }
+
+  pairingRequested = true;
+  pairingError = null;
+  try {
+    const code = await currentSocket.requestPairingCode(pairingNumber);
+    if (sock !== currentSocket || !pairingNumber) return;
+    if (!code || typeof code !== 'string') {
+      throw new Error('WhatsApp no devolvió un código de vinculación.');
+    }
+    pairingCode = code;
+    qrDataUrl = null;
+    lastQrAt = Date.now();
+    pairingError = null;
+    console.log('🔢 WhatsApp generó un código de vinculación para el número configurado.');
+  } catch (error) {
+    pairingRequested = false;
+    pairingCode = null;
+    pairingError = 'No se pudo generar el código de vinculación: ' +
+      String(error?.message || error).slice(0, 220);
+    console.error('❌ Error solicitando código de vinculación:', error?.message || error);
+  }
+}
+
 app.post('/iniciar', async (req, res) => {
   const numero = normalizePhoneNumber(req.body.numero);
 
