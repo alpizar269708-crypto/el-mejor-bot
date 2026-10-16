@@ -46,8 +46,8 @@ function opcionesPuppeteer() {
 const { downloadMediaMessage, downloadContentFromMessage } = require('@whiskeysockets/baileys');
 const { Sticker, StickerTypes } = require('wa-sticker-formatter');
 
-const STICKER_PACK = 'JASC13';
-const STICKER_AUTHOR = 'JASC13 - BOT';
+const STICKER_PACK = 'el mejor bot del mundo mundial';
+const STICKER_AUTHOR = 'el mejor bot del mundo mundial';
 
 // 🚀 Caché para no repetir conversiones idénticas y deduplicar trabajos simultáneos.
 const stickerCache = new Map();
@@ -166,16 +166,58 @@ async function prepararImagenSinRecorte(buffer) {
         .toBuffer();
 }
 
+// Los stickers animados de WhatsApp deben mantenerse por debajo de 500 KiB.
+// Re-encode iterativo reduce dimensiones/calidad sin convertir la animación en imagen fija.
+async function comprimirStickerAnimado(buffer) {
+    const limiteBytes = 500 * 1024;
+    let ultimo = buffer;
+    const perfiles = [
+        { lado: 512, calidad: 35 },
+        { lado: 420, calidad: 28 },
+        { lado: 360, calidad: 22 },
+        { lado: 320, calidad: 18 },
+        { lado: 280, calidad: 14 },
+        { lado: 240, calidad: 10 },
+        { lado: 200, calidad: 7 }
+    ];
+
+    for (const perfil of perfiles) {
+        try {
+            const salida = await sharp(buffer, { animated: true, pages: -1 })
+                .resize(perfil.lado, perfil.lado, {
+                    fit: 'contain',
+                    position: 'centre',
+                    background: { r: 0, g: 0, b: 0, alpha: 0 },
+                    withoutEnlargement: true
+                })
+                .webp({ quality: perfil.calidad, effort: 6, smartSubsample: true, loop: 0 })
+                .toBuffer();
+            ultimo = salida;
+            if (salida.length <= limiteBytes) return salida;
+        } catch (error) {
+            console.warn('⚠️ No se pudo reoptimizar el sticker animado:', error.message);
+            break;
+        }
+    }
+
+    if (ultimo.length > limiteBytes) {
+        throw new Error('El sticker animado sigue superando 500 KiB tras comprimirlo.');
+    }
+    return ultimo;
+}
+
 async function convertirStickerLocal(buffer, esVideo) {
     const entrada = esVideo ? buffer : await prepararImagenSinRecorte(buffer);
     const sticker = new Sticker(entrada, {
         pack: STICKER_PACK,
         author: STICKER_AUTHOR,
         type: StickerTypes.FULL,
-        quality: esVideo ? 10 : 90,
+        // Calidad baja en animaciones para priorizar compatibilidad con WhatsApp móvil.
+        quality: esVideo ? 8 : 90,
         background: { r: 0, g: 0, b: 0, alpha: 0 }
     });
-    return sticker.toBuffer();
+    const resultado = await sticker.toBuffer();
+    return esVideo ? await comprimirStickerAnimado(resultado) : resultado;
 }
 
 async function convertirVideoASticker(buffer, hash) {
@@ -190,7 +232,7 @@ async function convertirVideoASticker(buffer, hash) {
         if (obtenerConfiguracionCloudinary()) {
             try {
                 resultado = await descargarStickerCloudinary(buffer, hash);
-                if (resultado) resultado = await agregarMetadatosSticker(resultado, true);
+                if (resultado) resultado = await agregarMetadatosSticker(await comprimirStickerAnimado(resultado), true);
             } catch (error) {
                 console.warn('⚠️ Cloudinary no pudo convertir el sticker marcado; usando fallback local:', error.message);
             }
@@ -1744,20 +1786,75 @@ async function comandoPinterest(sock, chatId, msg, args) {
 }
 
 // 🌐 4. Traduce (Traductor instantáneo)
+const IDIOMAS_TRADUCCION = {
+    es: 'es', español: 'es', espanol: 'es', spanish: 'es',
+    en: 'en', inglés: 'en', ingles: 'en', english: 'en',
+    fr: 'fr', francés: 'fr', frances: 'fr', french: 'fr',
+    de: 'de', alemán: 'de', aleman: 'de', german: 'de',
+    it: 'it', italiano: 'it', italian: 'it',
+    pt: 'pt', portugués: 'pt', portugues: 'pt', portuguese: 'pt',
+    ja: 'ja', japonés: 'ja', japones: 'ja', japanese: 'ja',
+    ko: 'ko', coreano: 'ko', korean: 'ko',
+    zh: 'zh-CN', chino: 'zh-CN', chinese: 'zh-CN',
+    ru: 'ru', ruso: 'ru', russian: 'ru',
+    ar: 'ar', árabe: 'ar', arabe: 'ar', arabic: 'ar',
+    hi: 'hi', hindi: 'hi',
+    nl: 'nl', neerlandés: 'nl', holandés: 'nl', holandes: 'nl', dutch: 'nl',
+    tr: 'tr', turco: 'tr', turkish: 'tr',
+    pl: 'pl', polaco: 'pl', polish: 'pl',
+    uk: 'uk', ucraniano: 'uk', ukrainian: 'uk',
+    sv: 'sv', sueco: 'sv', swedish: 'sv',
+    el: 'el', griego: 'el', greek: 'el',
+    th: 'th', tailandés: 'th', tailandes: 'th', thai: 'th',
+    vi: 'vi', vietnamita: 'vi', vietnamese: 'vi',
+    id: 'id', indonesio: 'id', indonesian: 'id'
+};
+
 async function comandoTraduce(sock, chatId, msg, args) {
-    const idioma = args[0];
-    const texto = args.slice(1).join(' ');
+    let entrada = [...(args || [])].filter(Boolean);
+    // Permite "traduce a inglés texto" además de "traduce en texto".
+    if (String(entrada[0] || '').toLowerCase() === 'a') entrada.shift();
+    const idiomaSolicitado = String(entrada.shift() || '').trim();
+    const claveIdioma = idiomaSolicitado.toLocaleLowerCase('es').normalize('NFC');
+    const idioma = IDIOMAS_TRADUCCION[claveIdioma] || (/^[a-z]{2,3}(?:-[a-z]{2,4})?$/i.test(idiomaSolicitado) ? idiomaSolicitado : null);
+    const texto = entrada.join(' ').trim();
+
     if (!idioma || !texto) {
-        await sock.sendMessage(chatId, { text: '⚠️ Uso correcto: `traduce [idioma] [texto]`\nEjemplo: `traduce en Hola mundo`' }, { quoted: msg });
+        await sock.sendMessage(chatId, {
+            text: '⚠️ Uso: *traduce idioma texto*\nEjemplos:\n• traduce en Hola mundo\n• traduce inglés Hello world\n• traduce a francés Buenos días'
+        }, { quoted: msg });
         return;
     }
+
     try {
-        const res = await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${idioma}&dt=t&q=${encodeURIComponent(texto)}`);
+        const params = new URLSearchParams({
+            client: 'gtx',
+            sl: 'auto',
+            tl: idioma,
+            dt: 't',
+            q: texto
+        });
+        const res = await fetch('https://translate.googleapis.com/translate_a/single?' + params.toString(), {
+            headers: { 'User-Agent': 'Mozilla/5.0 el-mejor-bot' },
+            signal: AbortSignal.timeout(15000)
+        });
+        if (!res.ok) throw new Error('Servicio de traducción respondió HTTP ' + res.status);
         const data = await res.json();
-        const traducido = data[0][0][0];
-        await sock.sendMessage(chatId, { text: `🌐 *Traducción (${idioma.toUpperCase()})*:\n\n${traducido}` }, { quoted: msg });
+        const segmentos = Array.isArray(data?.[0]) ? data[0] : [];
+        const traducido = segmentos
+            .map(segmento => Array.isArray(segmento) && typeof segmento[0] === 'string' ? segmento[0] : '')
+            .filter(Boolean)
+            .join('')
+            .trim();
+        if (!traducido) throw new Error('La respuesta del traductor no contiene texto.');
+        await sock.sendMessage(chatId, {
+            text: `🌐 *Traducción (${idioma.toUpperCase()})*:\n\n${traducido}`
+        }, { quoted: msg });
     } catch (e) {
-        await sock.sendMessage(chatId, { text: '❌ Error al traducir el texto.' }, { quoted: msg });
+        console.error('❌ Error al traducir:', e?.message || e);
+        await sock.sendMessage(chatId, {
+            text: '❌ No pude traducirlo en este momento. Revisa el idioma y vuelve a intentarlo.'
+        }, { quoted: msg });
     }
 }
 
