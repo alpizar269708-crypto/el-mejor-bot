@@ -1210,9 +1210,14 @@ async function anunciarConexionEnGrupoStickers(socket, generation) {
       });
       sentMessageId = sent?.key?.id || null;
       if (!sentMessageId) {
-        console.error('⚠️ WhatsApp no devolvió ID para el aviso; no se marcará como entregado.');
+        console.error('⚠️ WhatsApp no devolvió ID para el aviso; no se puede confirmar el resultado.');
         return;
       }
+
+      // sendMessage resolvió correctamente: WhatsApp aceptó el envío. La recepción
+      // de un evento messages.update no es requisito para considerar estable el socket
+      // y no debe provocar reenvíos que dupliquen el aviso.
+      onlineAnnouncementSent = true;
       console.log('📤 WhatsApp aceptó el aviso para "Bot de stickers". ID: ' + sentMessageId);
 
       const ack = await Promise.race([
@@ -1221,13 +1226,12 @@ async function anunciarConexionEnGrupoStickers(socket, generation) {
       ]);
 
       if (ack) {
-        onlineAnnouncementSent = true;
         console.log('✅ Acuse de entrega recibido para "Bot de stickers". Estado: ' +
           ack.status + (ack.participant ? ', participante: ' + ack.participant : '') +
           ', ID: ' + sentMessageId);
       } else {
-        console.error('⚠️ El aviso tiene ID ' + sentMessageId +
-          ', pero no llegó acuse de entrega en 15 segundos. Se volverá a intentar tras una reconexión estable.');
+        console.warn('ℹ️ WhatsApp aceptó el aviso (ID: ' + sentMessageId +
+          '), pero no emitió un acuse de entrega detectable en 15 segundos. Se conserva el estado de aviso enviado para evitar duplicados.');
       }
     } catch (error) {
       console.error('❌ Falló el envío del aviso a "Bot de stickers":', error?.message || error);
