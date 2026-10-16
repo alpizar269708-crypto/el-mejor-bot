@@ -795,6 +795,7 @@ let sessionRecoveryFailures = 0;
 let remotePrimarySessionRejected = false;
 let lastConnectedAt = null;
 let onlineAnnouncementSent = false;
+let onlineAnnouncementInProgress = false;
 let lastDisconnectAt = null;
 let lastDisconnectCode = null;
 let lastDisconnectReason = null;
@@ -1136,6 +1137,54 @@ async function startSocket(restoreSession = true) {
   }
 }
 
+async function anunciarConexionEnGrupoStickers(socket, generation) {
+  if (onlineAnnouncementSent || onlineAnnouncementInProgress || shuttingDown) return;
+  onlineAnnouncementInProgress = true;
+
+  const normalizarNombreGrupo = value => String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+  try {
+    // Hasta seis intentos durante el primer minuto; si falla, otra reconexión
+    // podrá intentarlo de nuevo. No se marca como enviado antes de confirmar.
+    for (let intento = 1; intento <= 6; intento++) {
+      if (shuttingDown || generation !== socketGeneration || sock !== socket) return;
+      if (intento > 1) await new Promise(resolve => setTimeout(resolve, 10000));
+
+      try {
+        const grupos = await socket.groupFetchAllParticipating();
+        const entradas = Object.entries(grupos || {}).filter(([jid]) => jid.endsWith('@g.us'));
+        const objetivo = entradas.find(([, metadata]) =>
+          normalizarNombreGrupo(metadata?.subject) === 'bot de stickers'
+        );
+
+        if (!objetivo) {
+          console.warn('⚠️ Intento ' + intento + '/6: no aparece el grupo "Bot de stickers". Grupos visibles: ' +
+            (entradas.map(([, metadata]) => String(metadata?.subject || '(sin nombre)')).slice(0, 30).join(' | ') || '(ninguno)'));
+          continue;
+        }
+
+        if (shuttingDown || generation !== socketGeneration || sock !== socket) return;
+        await socket.sendMessage(objetivo[0], {
+          text: '🟢 ¡Ya estoy en línea! El bot de stickers está conectado y listo para recibir imágenes y videos. 🤖'
+        });
+        onlineAnnouncementSent = true;
+        console.log('✅ Aviso de conexión enviado al grupo "Bot de stickers" (' + objetivo[0] + ').');
+        return;
+      } catch (error) {
+        console.error('❌ Intento ' + intento + '/6 al avisar en "Bot de stickers":', error?.message || error);
+      }
+    }
+    console.error('❌ No se pudo enviar el aviso a "Bot de stickers" tras seis intentos. Comprueba que el bot siga siendo miembro del grupo y que el nombre coincida.');
+  } finally {
+    onlineAnnouncementInProgress = false;
+  }
+}
+
 async function startSocketInternal(restoreSession = true) {
   if (shuttingDown) return null;
   if (sock && (connectionState === 'conectado' || connectionState === 'conectando')) return sock;
@@ -1288,35 +1337,9 @@ async function startSocketInternal(restoreSession = true) {
       console.log('✅ el mejor bot conectado');
       console.log('🟢 WhatsApp conectado:', lastConnectedAt);
 
-      // Aviso de prueba: al conectar, localizar el grupo por nombre y anunciar que el bot está en línea.
-      // Solo se envía una vez por proceso para evitar mensajes repetidos durante reconexiones.
-      if (!onlineAnnouncementSent) {
-        try {
-          const participatingGroups = await newSock.groupFetchAllParticipating();
-          const normalizeGroupName = value => String(value || '')
-            .normalize('NFD')
-            .replace(/[\u0300-\u036f]/g, '')
-            .trim()
-            .toLowerCase();
-          const targetGroup = Object.entries(participatingGroups || {}).find(
-            ([jid, metadata]) =>
-              jid.endsWith('@g.us') &&
-              normalizeGroupName(metadata?.subject) === 'bot de stickers'
-          );
-
-          if (!targetGroup) {
-            console.warn('⚠️ No se encontró el grupo exacto "Bot de stickers"; no se pudo enviar el aviso.');
-          } else if (myGeneration === socketGeneration && sock === newSock) {
-            await newSock.sendMessage(targetGroup[0], {
-              text: '🟢 ¡Ya estoy en línea! El bot de stickers está conectado y listo para recibir imágenes y videos. 🤖'
-            });
-            onlineAnnouncementSent = true;
-            console.log('✅ Aviso de conexión enviado al grupo "Bot de stickers".');
-          }
-        } catch (announcementError) {
-          console.error('❌ No se pudo enviar el aviso al grupo "Bot de stickers":', announcementError.message);
-        }
-      }
+      // Reintentar la búsqueda/envío porque la lista de grupos puede tardar en estar disponible
+      // justo después de que Baileys marque la conexión como abierta.
+      void anunciarConexionEnGrupoStickers(newSock, myGeneration);
 
       // Si el socket abrió, la sesión está autenticada. Algunas vinculaciones
       // dejan registered=false en el archivo local hasta el siguiente creds.update;
